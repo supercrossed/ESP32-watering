@@ -105,26 +105,70 @@ boot 4  counter=4 > 3  -> restore .bak files, reset counter, reboot
 Nothing in the rollback path touches `config.py`, `wifi.json`, or
 `settings.json`, so credentials and settings always survive.
 
-## TLS notes
+## HTTPS does not work on ESP32-WROOM-32 (measured)
 
-GitHub is HTTPS-only, and a TLS handshake needs roughly **30-45KB of
-contiguous memory** from the ESP-IDF C heap - the same pool the WiFi stack
-uses. On a board with an application already running, that allocation is not
-guaranteed.
+**The device cannot fetch from GitHub directly.** This is not a tuning
+problem - it was measured on real hardware and HTTPS is disabled by default
+as a result.
 
-The updater collects garbage before connecting and treats a failed handshake
-as "try again tomorrow" rather than an error.
+MicroPython's `ssl.wrap_socket()` performs the TLS handshake *inside* the
+call. When it can't complete, it does not raise and does not honor the
+socket timeout - it **blocks indefinitely**, wedging the main loop (no HTTP
+responses, no valve timing) until the watchdog reboots the board.
 
-If TLS proves unreliable on your board, mirror the files over plain HTTP and
-point the updater at it:
+Measured on an ESP32-WROOM-32 running this application against
+`raw.githubusercontent.com`:
+
+| Free C heap | Largest block | Result |
+|---|---|---|
+| 30,944 | 29,696 | **hung** |
+| 27,308 | 26,624 | (refused by the guard) |
+
+The handshake needs room for record buffers *and* certificate-chain
+verification at once, and a running WiFi stack plus this application doesn't
+leave it. So the updater refuses HTTPS up front rather than risking a hang.
+
+To try anyway on a board with more headroom (PSRAM, or a stripped-down
+application), set `ALLOW_HTTPS = True` in `src/config.py` - a heap check
+still applies.
+
+## Use a plain-HTTP mirror instead
 
 ```python
-UPDATE_BASE_URL = "http://192.168.1.50/planter/"
+UPDATE_BASE_URL = "http://your-mirror.example.com/"
 ```
 
-Everything else works identically - the manifest, hashing, atomic install,
-and rollback don't care about the transport. Any static file host works: a
-Pi, a NAS, or a Cloudflare Worker mirroring the repo.
+Everything else is unchanged - manifest, SHA-256 verification, atomic
+install, and rollback are all transport-agnostic.
+
+### Cloudflare Worker (recommended for kits)
+
+[`tools/cloudflare-worker.js`](../tools/cloudflare-worker.js) mirrors this
+repo over plain HTTP. Cloudflare does the HTTPS fetch from GitHub on its own
+servers, where memory isn't a constraint, and serves plain bytes to devices.
+Free tier, nothing to maintain, edge-cached so a fleet doesn't hammer GitHub,
+and **GitHub stays the source of truth** - publishing is still `git push`.
+
+1. dash.cloudflare.com -> Workers & Pages -> Create Worker
+2. Paste the file, edit `REPO`/`BRANCH`, Deploy
+3. `UPDATE_BASE_URL = "http://your-worker.workers.dev/"`
+   (**http**, not https - the device must not do TLS)
+
+### Local mirror (development only)
+
+`serve_updates.ps1` serves the repo from your PC over HTTP. Useful for
+testing an update before publishing; **only reachable on your own LAN**, so
+it is not a solution for kit owners.
+
+## Security trade-off
+
+Plain HTTP is unauthenticated. Per-file SHA-256 verification means a
+tampered *file* is rejected, but the manifest arrives over the same channel,
+so a hostile network could serve a coherent older or malicious set.
+
+For a garden controller on a home LAN this is a reasonable trade. **Before
+shipping kits**, sign the manifest (ed25519, public key baked into the
+firmware) - that closes the gap completely and is on the roadmap.
 
 ## What gets updated
 

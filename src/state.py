@@ -46,6 +46,12 @@ last_update_install = None  # unix ts of the last applied update
 update_available = None     # version string if an update is waiting, else None
 update_error = None         # last check/apply error, for the dashboard
 update_in_progress = False  # blocks watering triggers while files are swapping
+# Set by web.py when the dashboard asks for a check/apply; the MAIN LOOP
+# picks it up and does the network work. The HTTP handler must never do it
+# itself - a TLS handshake can block indefinitely on MicroPython and would
+# freeze the loop (no responses, no valve timing) until the watchdog fires.
+update_requested = None     # None | "check" | "apply"
+update_last_result = None   # short human-readable outcome for the dashboard
 
 _events = []
 _moisture_history = []

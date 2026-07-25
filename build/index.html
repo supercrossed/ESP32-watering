@@ -1791,13 +1791,21 @@ function renderOta(u, nowTs) {
   // request mid-update would fight for the same TLS memory.
   checkBtn.disabled = !!u.busy;
   applyBtn.disabled = !!u.busy;
+  // Prefer the device's own summary of the last run; fall back to the raw
+  // error. (Without this the 5s status poll would overwrite the result the
+  // check-poll just displayed.)
   if (u.busy) {
     status.textContent = 'Working...';
+  } else if (u.result) {
+    status.textContent = u.result;
   } else if (u.error) {
     status.textContent = 'Last attempt: ' + u.error;
   }
 }
 
+// The device QUEUES the check and does the network work in its main loop -
+// the HTTP response comes back immediately and only says "queued". The
+// actual outcome arrives via /api/status (update.result), so poll for it.
 async function otaCheck() {
   const status = document.getElementById('ota-status');
   const btn = document.getElementById('ota-check-btn');
@@ -1808,18 +1816,51 @@ async function otaCheck() {
     const j = await r.json();
     if (!j.ok) {
       status.textContent = 'Check failed: ' + (j.error || 'unknown error');
-    } else if (j.changed && j.changed.length) {
-      status.textContent = 'Update available (' + j.changed.length +
-        ' file(s) changed): ' + j.changed.join(', ');
-      document.getElementById('ota-apply-btn').style.display = '';
-    } else {
-      status.textContent = 'Up to date.';
+      btn.disabled = false;
+      return;
     }
+    if (j.queued === false) {
+      status.textContent = j.error || 'A check is already running.';
+      btn.disabled = false;
+      return;
+    }
+    otaPollResult(status, btn);
   } catch (e) {
     status.textContent = 'Check failed: ' + e;
+    btn.disabled = false;
   }
-  btn.disabled = false;
-  refresh();
+}
+
+// Poll /api/status until the device reports an outcome (or we give up).
+function otaPollResult(status, btn) {
+  let tries = 0;
+  const started = Date.now();
+  const poll = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      const s = await r.json();
+      const u = s.update || {};
+      if (!u.busy && u.result) {
+        clearInterval(poll);
+        status.textContent = u.result;
+        if (u.available) document.getElementById('ota-apply-btn').style.display = '';
+        btn.disabled = false;
+        refresh();
+        return;
+      }
+      status.textContent = 'Contacting the repo... (' +
+        Math.round((Date.now() - started) / 1000) + 's)';
+    } catch (e) {
+      // device is busy in its update call - it can't answer right now
+    }
+    if (tries > 30) {
+      clearInterval(poll);
+      status.textContent = 'No response yet. Check the serial console - the ' +
+        'device may still be working, or the network may be unreachable.';
+      btn.disabled = false;
+    }
+  }, 2000);
 }
 
 async function otaApply() {
@@ -1831,7 +1872,7 @@ async function otaApply() {
   try {
     await fetch('/api/update/apply', { method: 'POST' });
   } catch (e) {
-    // the reboot kills the connection mid-request; that's expected
+    // the device may already be busy installing; that's expected
   }
   status.textContent = 'Update applied - waiting for the planter to come back...';
   // poll until the device answers again, then reload to pick up any new UI

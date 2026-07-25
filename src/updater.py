@@ -72,6 +72,12 @@ def manifest_path(config):
     return _cfg(config, "UPDATE_MANIFEST_PATH", DEFAULT_MANIFEST_PATH)
 
 
+def _timeout(config):
+    """Seconds any single network step may take. The main loop is blocked
+    for this long, so keep it well under WATCHDOG_TIMEOUT_SEC."""
+    return _cfg(config, "UPDATE_TIMEOUT_SEC", 15)
+
+
 def base_url(config):
     url = _cfg(config, "UPDATE_BASE_URL", None)
     if url:
@@ -166,26 +172,104 @@ def _parse_url(url):
     return scheme, host, port, path
 
 
+# HTTPS ON ESP32: MEASURED, NOT THEORETICAL
+#
+# ssl.wrap_socket() performs the TLS handshake inside the call and BLOCKS
+# INDEFINITELY when it can't complete - no exception, no timeout honored,
+# no way to interrupt it from Python. It wedges the main loop until the
+# watchdog reboots the board.
+#
+# Measured on an ESP32-WROOM-32 running this application against
+# raw.githubusercontent.com: hung with 30944 bytes free / 29696 largest
+# contiguous. The handshake needs room for the record buffers AND
+# certificate-chain verification simultaneously; a running WiFi stack plus
+# this app doesn't leave it.
+#
+# So HTTPS is OFF by default. Point UPDATE_BASE_URL at a plain-HTTP mirror
+# (see docs/ota-updates.md - a free Cloudflare Worker mirroring the repo
+# works, and needs no server to maintain). Everything else about the
+# updater - manifest, SHA-256 verification, atomic install, rollback - is
+# transport-agnostic and unchanged.
+#
+# Set ALLOW_HTTPS = True to try it anyway on a board with more headroom
+# (e.g. an ESP32 with PSRAM, or a stripped-down application).
+ALLOW_HTTPS = False
+MIN_TLS_HEAP = 45000  # measured floor is above 29696; this is a guess, not a promise
+
+
+def _idf_largest_block():
+    """Largest contiguous ESP-IDF C-heap block, or None if unavailable."""
+    try:
+        import esp32
+        return max(h[2] for h in esp32.idf_heap_info(esp32.HEAP_DATA))
+    except (ImportError, AttributeError, ValueError):
+        return None
+
+
+def tls_feasible(config=None):
+    """(ok, detail) - should we attempt an HTTPS handshake at all?
+
+    Defaults to NO: on this hardware wrap_socket() hangs unrecoverably
+    rather than failing, so attempting it costs a watchdog reboot. Opt in
+    with config.ALLOW_HTTPS = True."""
+    allow = _cfg(config, "ALLOW_HTTPS", ALLOW_HTTPS) if config else ALLOW_HTTPS
+    if not allow:
+        return False, "HTTPS is not supported on this hardware"
+    gc.collect()
+    largest = _idf_largest_block()
+    if largest is None:
+        return True, "heap info unavailable"
+    return largest >= MIN_TLS_HEAP, "largest C-heap block {} bytes (need ~{})".format(
+        largest, MIN_TLS_HEAP)
+
+
 def _open_stream(url, timeout=20):
-    """Open a GET and return (socket, status_code). Caller must close."""
+    """Open a GET and return (socket, status_code, leftover_bytes). Caller
+    must close.
+
+    Every step is bounded by `timeout`. Without that, a stalled TLS
+    handshake blocks the ENTIRE main loop - the web server, valve timing,
+    everything - until the watchdog reboots the board. Symptom: the
+    dashboard sits on "Contacting the repo..." forever."""
     import socket
     scheme, host, port, path = _parse_url(url)
     gc.collect()  # TLS needs a big contiguous block - give it the best shot
-    ai = socket.getaddrinfo(host, port)[0][-1]
+
+    # DNS is its own failure mode: with the C heap tight, getaddrinfo can
+    # fail with -202/-203 or hang. Surface it as a clear error.
+    try:
+        ai = socket.getaddrinfo(host, port)[0][-1]
+    except Exception as e:
+        raise OSError("DNS lookup failed for {}: {}".format(host, e))
+
     s = socket.socket()
+    # The timeout MUST be set before wrap_socket(): that call performs the
+    # TLS handshake internally, so a timeout applied afterwards is too late
+    # to bound it. (On some ESP32 builds wrap_socket still reverts the
+    # socket to blocking mode regardless - which is why main.py bounds the
+    # whole operation with the watchdog rather than relying on this alone.)
     s.settimeout(timeout)
     try:
         s.connect(ai)
         if scheme == "https":
             import ssl
             s = ssl.wrap_socket(s, server_hostname=host)
+            # Re-apply for the READ phase - wrap_socket returns a new object
+            # that does not inherit the raw socket's timeout.
+            try:
+                s.settimeout(timeout)
+            except (AttributeError, OSError):
+                pass  # some builds don't expose it on the wrapped socket
         req = ("GET {} HTTP/1.0\r\nHost: {}\r\n"
                "User-Agent: esp32-planter\r\n"
                "Connection: close\r\n\r\n").format(path, host)
         s.write(req.encode())
 
-        # read status line + headers without buffering the body
+        # read status line + headers without buffering the body. Bounded by
+        # wall time as well as size - a peer that trickles bytes without
+        # ever completing the headers would otherwise spin here.
         buf = b""
+        _deadline = time.time() + timeout
         while b"\r\n\r\n" not in buf:
             chunk = s.read(128)
             if not chunk:
@@ -193,6 +277,8 @@ def _open_stream(url, timeout=20):
             buf += chunk
             if len(buf) > 4096:
                 break
+            if time.time() > _deadline:
+                raise OSError("timed out reading response headers")
         head, _, leftover = buf.partition(b"\r\n\r\n")
         try:
             status = int(head.split(b" ")[1])
@@ -207,10 +293,29 @@ def _open_stream(url, timeout=20):
         raise
 
 
-def _fetch_small(url, limit=8192):
+def _redirect_target(head):
+    """Location: value from a response header block, or None."""
+    for line in head.split(b"\r\n"):
+        if line[:9].lower() == b"location:":
+            try:
+                return line[9:].strip().decode()
+            except Exception:
+                return None
+    return None
+
+
+def _fetch_small(url, limit=8192, timeout=20):
     """Fetch a small resource (the manifest) fully into RAM."""
-    s, status, leftover = _open_stream(url)
+    s, status, leftover = _open_stream(url, timeout)
     try:
+        # A mirror behind Cloudflare may be configured with "Always Use
+        # HTTPS", which 301s us to a URL this device cannot fetch. Say so
+        # clearly instead of failing with a bare status code.
+        if status in (301, 302, 307, 308):
+            raise OSError(
+                "server redirected (HTTP {}) - if this is Cloudflare, turn "
+                "off 'Always Use HTTPS' for this host; the device cannot "
+                "use HTTPS".format(status))
         if status != 200:
             raise OSError("HTTP {}".format(status))
         body = leftover
@@ -228,13 +333,16 @@ def _fetch_small(url, limit=8192):
         gc.collect()
 
 
-def _download_to(url, dest, expect_hash):
+def _download_to(url, dest, expect_hash, timeout=20):
     """Stream a URL to `dest`, verifying its SHA-256. Returns True on a
     verified write; the temp file is removed on any failure."""
-    s, status, leftover = _open_stream(url)
+    s, status, leftover = _open_stream(url, timeout)
     h = _sha256()
     written = 0
     try:
+        if status in (301, 302, 307, 308):
+            raise OSError("server redirected (HTTP {}) - device cannot follow "
+                          "it (no HTTPS support)".format(status))
         if status != 200:
             raise OSError("HTTP {}".format(status))
         with open(dest, "wb") as f:
@@ -307,8 +415,19 @@ def check(config):
     if not url:
         result["error"] = "no UPDATE_REPO configured"
         return result
+
+    # Refuse an HTTPS handshake we can't afford - on ESP32 it hangs rather
+    # than failing, and there's no way to interrupt it from Python.
+    if url.startswith("https://"):
+        ok, detail = tls_feasible(config)
+        if not ok:
+            result["error"] = (
+                "{} - set UPDATE_BASE_URL to a plain-HTTP mirror "
+                "(docs/ota-updates.md)".format(detail))
+            return result
+
     try:
-        raw = _fetch_small(url + manifest_path(config))
+        raw = _fetch_small(url + manifest_path(config), timeout=_timeout(config))
         manifest = json.loads(raw)
     except Exception as e:
         result["error"] = "manifest fetch failed: {}".format(e)
@@ -367,8 +486,16 @@ def apply(config, on_progress=None):
         result["error"] = "no UPDATE_REPO configured"
         return result
 
+    if url.startswith("https://"):
+        ok, detail = tls_feasible(config)
+        if not ok:
+            result["error"] = (
+                "{} - set UPDATE_BASE_URL to a plain-HTTP mirror "
+                "(docs/ota-updates.md)".format(detail))
+            return result
+
     try:
-        manifest = json.loads(_fetch_small(url + manifest_path(config)))
+        manifest = json.loads(_fetch_small(url + manifest_path(config), timeout=_timeout(config)))
     except Exception as e:
         result["error"] = "manifest fetch failed: {}".format(e)
         return result
@@ -402,7 +529,7 @@ def apply(config, on_progress=None):
             on_progress(name)
         gc.collect()
         tmp = name + ".new"
-        if not _download_to(url + fetch_from, tmp, want):
+        if not _download_to(url + fetch_from, tmp, want, _timeout(config)):
             for s in staged:
                 _unlink(s + ".new")
             result["error"] = "download/verify failed: " + name

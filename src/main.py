@@ -679,6 +679,47 @@ while True:
     except Exception as e:
         print("web poll error:", e)
 
+    # Dashboard-requested update check/apply. Runs HERE, not in the HTTP
+    # handler: a TLS handshake can block for many seconds (or indefinitely
+    # on some builds), and doing that inside poll_once() freezes the whole
+    # loop - no responses, no valve timing. The browser already got its
+    # "queued" reply and polls /api/status for the result.
+    if state.update_requested:
+        _req = state.update_requested
+        state.update_requested = None
+        if wdt:
+            wdt.feed()  # the call below can take the full UPDATE_TIMEOUT_SEC
+        try:
+            # Print the C-heap state BEFORE the attempt: an HTTPS handshake
+            # needs a big contiguous block, and if it isn't there the call
+            # can hang with no way to interrupt it. This line is the last
+            # thing you'll see if that happens.
+            gc.collect()
+            _f, _l = idf_heap()
+            print("update: starting {} (IDF free={} largest={})".format(
+                _req, _f, _l))
+            _res = run_update_check(install=(_req == "apply"))
+            if _res.get("ok"):
+                _changed = _res.get("changed") or []
+                if _req == "apply":
+                    state.update_last_result = "installed {} file(s)".format(
+                        len(_res.get("installed") or []))
+                elif _changed:
+                    state.update_last_result = "update available ({} file(s))".format(
+                        len(_changed))
+                else:
+                    state.update_last_result = "up to date"
+            else:
+                state.update_last_result = "failed: {}".format(
+                    _res.get("error") or "unknown error")
+            print("update:", state.update_last_result)
+        except Exception as e:
+            state.update_last_result = "failed: {}".format(e)
+            state.update_error = str(e)
+            print("update error:", e)
+        if wdt:
+            wdt.feed()
+
     # "CPU load" = fraction of the last ~5s NOT spent idling in select()
     # status LED: reflects the two things that make the device "reachable".
     # Non-blocking - blink phase comes from the millisecond clock, and the

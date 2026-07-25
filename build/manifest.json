@@ -1,10 +1,10 @@
 {
-    "version":  "2026.07.24.2301",
-    "generated":  "2026-07-24T23:01:44.7090042-04:00",
+    "version":  "2026.07.24.2343",
+    "generated":  "2026-07-24T23:43:18.5784791-04:00",
     "files":  {
                   "web.mpy":  {
-                                  "sha256":  "a7084dccef8856fbf0461f9a30c853d26183b95141a9e3399a3270a1d5688155",
-                                  "size":  14628,
+                                  "sha256":  "91f066fb0b575c5b83736c8a028d15294132d5c1bf97c891bd457cc30fce4d96",
+                                  "size":  14701,
                                   "path":  "build/web.mpy"
                               },
                   "valve.mpy":  {
@@ -18,8 +18,8 @@
                                    "path":  "build/wifi.mpy"
                                },
                   "state.mpy":  {
-                                    "sha256":  "aabfbea0e1154bd9f277520d89338ad5760ce4cfd9494745645737326581cd5c",
-                                    "size":  1610,
+                                    "sha256":  "1c0d0e88f62476d2f3fcf59fd5aafd8585c00d9faa8973e38b04269d118ee1c6",
+                                    "size":  1657,
                                     "path":  "build/state.mpy"
                                 },
                   "env_sensors.mpy":  {
@@ -28,13 +28,13 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "f9cbc71714d00108c5ab11044b37f23d2a67c9bde45662bee625194027a6221c",
-                                  "size":  29829,
+                                  "sha256":  "237841566f11f621fe6a947510e3dc7dc75b87487f403f961550713ef34ea604",
+                                  "size":  31795,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
-                                      "sha256":  "1abe00fc2d754111426810b95c3229851f9f6d6c24902c9d33bdd30b18b1e41b",
-                                      "size":  4373,
+                                      "sha256":  "5d17ab9ace8b24d4436d0f30f8d95e4a3b03cfb9f5bcdd4dd4ab50f3c8652749",
+                                      "size":  5607,
                                       "path":  "build/updater.mpy"
                                   },
                   "boot.py":  {
@@ -58,8 +58,8 @@
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {
-                                     "sha256":  "0b33d6764c59f93ef566db6b28802a71652af664626fe0d93e58421c835f9f4f",
-                                     "size":  87928,
+                                     "sha256":  "96aac065a967cbd9ee223c175d3128bcd73739c3178a568e16ead2a2533cb3d6",
+                                     "size":  89385,
                                      "path":  "build/index.html"
                                  },
                   "ads1x15.mpy":  {

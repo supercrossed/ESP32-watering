@@ -60,9 +60,22 @@ UPDATE_AUTO_INSTALL = False
 # from build/, so that's the default. Each manifest entry also carries its
 # own path, so the repo can be reorganized without reflashing devices.
 UPDATE_MANIFEST_PATH = "build/manifest.json"
-# Optional override: point at a plain-HTTP mirror if TLS is unreliable on
-# your board (a TLS handshake needs ~30-45KB of contiguous C heap).
-# UPDATE_BASE_URL = "http://192.168.1.50/planter/"
+# Seconds any single network step (DNS, connect, TLS handshake, read) may
+# take. The main loop is BLOCKED for this long, so keep it comfortably
+# under WATCHDOG_TIMEOUT_SEC or a slow check can trip a reboot.
+UPDATE_TIMEOUT_SEC = 15
+# Plain-HTTP mirror. REQUIRED: the device cannot do HTTPS - MicroPython's
+# ssl.wrap_socket() hangs unrecoverably on this hardware (measured; see
+# docs/ota-updates.md). Point this at a mirror of the repo.
+#
+#   For kits / normal use: deploy tools/cloudflare-worker.js (free tier,
+#     nothing to maintain) and put its URL here. Use http://, NOT https://
+#     - the whole point is that the device does no TLS.
+#   For local testing: run .\serve_updates.ps1 and use the URL it prints
+#     (needs an inbound firewall rule for its port).
+#
+# EDIT THIS to your own worker subdomain before flashing kits.
+UPDATE_BASE_URL = "http://planter-updates.supercrossed.workers.dev/"
 
 # ---- Status LED (onboard "D2" blue LED on GPIO 2, active high) ----
 # Solid   = WiFi connected AND web server up (all good)

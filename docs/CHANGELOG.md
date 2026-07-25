@@ -5,6 +5,34 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-07-24 (later)
+
+### HTTPS disabled by default - it hangs on ESP32-WROOM-32
+Measured, not theoretical: `ssl.wrap_socket()` blocks indefinitely when it
+can't complete the handshake, honoring no timeout and raising nothing. It
+froze the main loop until the watchdog rebooted. Hung with 30,944 bytes free
+and a 29,696-byte largest contiguous block, so no heap threshold makes it
+safe.
+
+`ALLOW_HTTPS` is now `False` by default; the updater refuses up front with a
+clear message. Use a plain-HTTP mirror - `tools/cloudflare-worker.js`
+(free, nothing to maintain, GitHub stays the source of truth) for kits, or
+`serve_updates.ps1` for local testing.
+
+### Fixed: update requests froze the whole device
+The `/api/update/*` handlers performed the network fetch inline, so a
+stalled handshake blocked the main loop - no HTTP responses (browser showed
+"TypeError: Failed to fetch"), no valve timing. The endpoints now queue the
+request and return immediately; the main loop does the work and the
+dashboard polls `/api/status` for the outcome.
+
+### Fixed: TLS timeout was applied too late
+`settimeout()` was called after `ssl.wrap_socket()`, but the handshake
+happens *inside* that call. Also added a DNS-failure path and a wall-clock
+bound on header reads, plus `UPDATE_TIMEOUT_SEC` (default 15s).
+
+---
+
 ## 2026-07-24
 
 ### Repo reorganized

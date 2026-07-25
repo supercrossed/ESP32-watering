@@ -13,9 +13,17 @@ events.log
 
 # ---- build/ IS committed ----
 # It's what the OTA updater publishes - devices fetch build/manifest.json
-# and the files it lists. Two exceptions:
-build/config.py         # would contain real credentials
-build/.last_deploy      # local bookkeeping, not part of a release
+# and the files it lists. Two exceptions below.
+#
+# NOTE: git does NOT support trailing comments on a pattern line - the
+# comment becomes part of the filename and the rule silently never matches.
+# Keep comments on their own lines. (This exact mistake published real WiFi
+# credentials to a public repo once.)
+#
+# would contain real WiFi credentials
+build/config.py
+# local deploy bookkeeping, not part of a release
+build/.last_deploy
 
 # ---- Local scratch ----
 verify_tmp/

@@ -302,33 +302,33 @@ def _handle(cl):
             state.log_event("reboot", "wifi credentials changed to " + ssid)
             time.sleep(1)
             machine.reset()
-    elif path == "/api/update/check" and method == "POST":
-        # Ask the repo what's available. Cheap, no files touched.
+    elif path in ("/api/update/check", "/api/update/apply") and method == "POST":
+        # NEVER do the network work here. A TLS handshake on MicroPython
+        # can block indefinitely - wrap_socket() performs the handshake
+        # internally and some ESP32 builds ignore the socket timeout while
+        # doing it. Blocking inside the handler froze the whole main loop:
+        # no HTTP responses (browser reported "Failed to fetch"), no valve
+        # timing, until the watchdog rebooted the board.
+        #
+        # Instead: queue the request, answer immediately, and let the main
+        # loop run it between iterations. The dashboard polls /api/status
+        # for the outcome.
         if _update_cb is None:
             _send(cl, 503, "application/json",
                   json.dumps({"ok": False, "error": "updater not available"}))
         else:
-            _feed()  # a TLS handshake can take a few seconds
-            res = _update_cb(False)
-            _send(cl, 200, "application/json", json.dumps(res))
-    elif path == "/api/update/apply" and method == "POST":
-        # Download + verify + install, then reboot. The response is sent
-        # BEFORE the work starts, because the reboot kills this socket -
-        # the dashboard polls /api/status afterwards to see the new version.
-        if _update_cb is None:
-            _send(cl, 503, "application/json",
-                  json.dumps({"ok": False, "error": "updater not available"}))
-        else:
-            _send(cl, 200, "application/json",
-                  json.dumps({"ok": True, "started": True}))
-            try:
-                cl.close()
-            except OSError:
-                pass
-            _feed()
-            state.log_event("update", "update requested from dashboard")
-            _update_cb(True)  # reboots on success
-        return
+            want_install = path.endswith("/apply")
+            if state.update_in_progress:
+                _send(cl, 200, "application/json",
+                      json.dumps({"ok": True, "queued": False,
+                                  "error": "an update check is already running"}))
+            else:
+                state.update_requested = "apply" if want_install else "check"
+                state.update_error = None
+                state.log_event("update",
+                                "dashboard requested " + state.update_requested)
+                _send(cl, 200, "application/json",
+                      json.dumps({"ok": True, "queued": True}))
     elif path == "/api/reboot" and method == "POST":
         _send(cl, 200, "application/json", json.dumps({"ok": True}))
         cl.close()
@@ -1063,7 +1063,8 @@ def _status_payload():
             "last_install": state.last_update_install,
             "available": state.update_available,
             "error": state.update_error,
-            "busy": state.update_in_progress,
+            "busy": state.update_in_progress or bool(state.update_requested),
+            "result": state.update_last_result,
         },
     }
 
