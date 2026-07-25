@@ -58,7 +58,7 @@ recovers on the next good read.
 **First, check the LED.** Fast blink means WiFi is down - that's a different
 problem. Solid means the server is up and the issue is network-side.
 
-**Turn on request logging.** Set `WEB_DEBUG = True` in `config.py`. Every
+**Turn on request logging.** Set `WEB_DEBUG = True` in `src/config.py`. Every
 HTTP request then prints to the console:
 
 ```
@@ -122,7 +122,7 @@ on the device is what consumes that heap. See
 
 **At the REPL:** the hardware watchdog reboots the board every
 `WATCHDOG_TIMEOUT_SEC` (120s default) because the main loop isn't feeding it.
-Set `WATCHDOG_TIMEOUT_SEC = 0` in `config.py` while developing with Thonny.
+Set `WATCHDOG_TIMEOUT_SEC = 0` in `src/config.py` while developing with Thonny.
 
 **After an update:** `boot.py` restores the previous build automatically after
 3 failed boots. Watch for:

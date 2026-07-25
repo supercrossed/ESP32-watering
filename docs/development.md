@@ -2,7 +2,21 @@
 
 [<- Docs index](README.md)
 
-## Architecture
+## Repo layout
+
+```
+README.md            quick start
+build_mpy.ps1        build script
+src/                 device source - edit here
+build/               generated artifacts - what the ESP32 runs, what OTA publishes
+docs/                these guides
+hardware/            3D models, enclosures, reference material
+```
+
+`build/` is regenerated on every build; never edit it by hand. It's
+committed because that's what publishes an OTA release.
+
+## Modules (all in `src/`)
 
 ```
 boot.py             OTA rollback guard - runs before main.py
@@ -21,7 +35,11 @@ updater.py          OTA: manifest, verify, atomic install
 index.html          the dashboard (single page)
 ```
 
-`config.py` holds first-boot defaults only. After the first boot,
+The **device filesystem is flat** - everything lands in the ESP32's root
+regardless of the repo layout. The OTA manifest records each file's repo
+path so the device knows where to fetch from.
+
+`src/config.py` holds first-boot defaults only. After the first boot,
 `settings.json` on the device takes priority - so changing `config.py` on a
 device that's already been set up usually does nothing.
 
@@ -70,7 +88,7 @@ Both figures print at boot and once a minute, and appear in `/api/status` as
 **Never build large strings.** Stream instead. See `_send_file()`,
 `_send_history()`, and `_stream_multipart_to_disk()` in `web.py`.
 
-**`index.html` is streamed from flash in 1KB chunks.** It used to be a Python
+**`src/index.html` is streamed from flash in 1KB chunks.** It used to be a Python
 string literal in `web.py`; a ~34KB literal needs one contiguous allocation
 to compile and reliably failed with `MemoryError` on a fragmented heap.
 
@@ -105,7 +123,7 @@ Produces `build/` with `.mpy` modules plus `main.py`, `boot.py`, `config.py`,
 `main.py` stays uncompiled (it's executed by name at boot, not imported) and
 `config.py` stays plain text so it's hand-editable in Thonny in the field.
 
-The script also regenerates `config.example.py` from `config.py` with
+The script also regenerates `src/config.example.py` from `config.py` with
 credentials scrubbed, and **aborts** if a real credential survives scrubbing.
 
 After uploading, `.\build_mpy.ps1 -Deployed` records what's on the device so
@@ -119,10 +137,10 @@ There's no hardware in CI. At minimum, keep everything parseable:
 
 ```bash
 # every .py must parse (they won't RUN under CPython - they import machine)
-for f in *.py; do python3 -c "import ast; ast.parse(open('$f').read())"; done
+for f in src/*.py; do python3 -c "import ast; ast.parse(open('$f').read())"; done
 ```
 
-For the dashboard, extract the `<script>` block from `index.html` and:
+For the dashboard, extract the `<script>` block from `src/index.html` and:
 
 ```bash
 node --check dash.js

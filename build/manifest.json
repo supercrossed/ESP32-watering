@@ -1,0 +1,71 @@
+{
+    "version":  "2026.07.24.2301",
+    "generated":  "2026-07-24T23:01:44.7090042-04:00",
+    "files":  {
+                  "web.mpy":  {
+                                  "sha256":  "a7084dccef8856fbf0461f9a30c853d26183b95141a9e3399a3270a1d5688155",
+                                  "size":  14628,
+                                  "path":  "build/web.mpy"
+                              },
+                  "valve.mpy":  {
+                                    "sha256":  "923bc530a7028b318d56a36934d366e3e718c3b0565e6775a94e41b236255b1f",
+                                    "size":  920,
+                                    "path":  "build/valve.mpy"
+                                },
+                  "wifi.mpy":  {
+                                   "sha256":  "4c657232afabc807f3435857b39a3465a50b8b3358798f471e2b14c72cdc912f",
+                                   "size":  1172,
+                                   "path":  "build/wifi.mpy"
+                               },
+                  "state.mpy":  {
+                                    "sha256":  "aabfbea0e1154bd9f277520d89338ad5760ce4cfd9494745645737326581cd5c",
+                                    "size":  1610,
+                                    "path":  "build/state.mpy"
+                                },
+                  "env_sensors.mpy":  {
+                                          "sha256":  "324d277769cb99ed8a75e6b1823e8e48e2c6a7e9afd081dc09db58ec0267d42a",
+                                          "size":  1148,
+                                          "path":  "build/env_sensors.mpy"
+                                      },
+                  "main.py":  {
+                                  "sha256":  "f9cbc71714d00108c5ab11044b37f23d2a67c9bde45662bee625194027a6221c",
+                                  "size":  29829,
+                                  "path":  "build/main.py"
+                              },
+                  "updater.mpy":  {
+                                      "sha256":  "1abe00fc2d754111426810b95c3229851f9f6d6c24902c9d33bdd30b18b1e41b",
+                                      "size":  4373,
+                                      "path":  "build/updater.mpy"
+                                  },
+                  "boot.py":  {
+                                  "sha256":  "e3b6d2fd798b8650540f741375910f1ceb4490f4e8a3f59e0bd88a2d85dfcaa2",
+                                  "size":  2428,
+                                  "path":  "build/boot.py"
+                              },
+                  "settings_store.mpy":  {
+                                             "sha256":  "183c265e6c90c33233ca3832fa6dc1971a3bab5dbbe46a3582b95f5fc36b6b5f",
+                                             "size":  2235,
+                                             "path":  "build/settings_store.mpy"
+                                         },
+                  "moisture.mpy":  {
+                                       "sha256":  "f923987dcead33cf4d582a41e57549893d53009f3d894e7b8576567d95587917",
+                                       "size":  389,
+                                       "path":  "build/moisture.mpy"
+                                   },
+                  "wifi_setup.mpy":  {
+                                         "sha256":  "68cc5ed166023a532503588613d8fd6d011ff08e67458316fe4a7a30e456d3e4",
+                                         "size":  5125,
+                                         "path":  "build/wifi_setup.mpy"
+                                     },
+                  "index.html":  {
+                                     "sha256":  "0b33d6764c59f93ef566db6b28802a71652af664626fe0d93e58421c835f9f4f",
+                                     "size":  87928,
+                                     "path":  "build/index.html"
+                                 },
+                  "ads1x15.mpy":  {
+                                      "sha256":  "87a6dc024e66891e9646506271209468770e1a900aed919081840ad7a49a9a69",
+                                      "size":  693,
+                                      "path":  "build/ads1x15.mpy"
+                                  }
+              }
+}

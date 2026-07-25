@@ -57,7 +57,7 @@ esptool.py --chip esp32 --port COM3 --baud 460800 write_flash -z 0x1000 ESP32_GE
 ```bash
 git clone https://github.com/supercrossed/ESP32-watering.git
 cd ESP32-watering
-cp config.example.py config.py
+cp src/config.example.py src/config.py
 pip install mpy-cross
 .\build_mpy.ps1
 ```

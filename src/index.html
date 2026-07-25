@@ -1,0 +1,1878 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planter Control</title>
+<style>
+:root {
+  --bg: #f2f4ef;
+  --card: #fdfdfb;
+  --card-2: #fbfbf8;
+  --ink: #1a1c17;
+  --ink-2: #4f524b;
+  --muted: #75736a;
+  --faint: #bcbab0;
+  --line: #e6e5dd;
+  --line-2: #efeee8;
+  --ring: rgba(20, 24, 15, 0.08);
+  --green: #2e7d32;
+  --green-hover: #27702c;
+  --green-dark: #1d5c2a;
+  --green-text: #1d6327;
+  --green-soft: #e9f3e8;
+  --green-soft-2: #ddecdc;
+  --red: #c62828;
+  --red-hover: #b02323;
+  --red-text: #b02a23;
+  --red-soft: #fbedec;
+  --blue: #1c5cab;
+  --blue-btn: #1c5cab;
+  --blue-btn-hover: #174e92;
+  --blue-soft: #e9f0fa;
+  --blue-border: #c7daf2;
+  --amber-text: #8a5a00;
+  --amber-soft: #fdf3df;
+  --amber-soft-2: #f8e9c8;
+  --pill-green-border: #cfe3cd;
+  --pill-amber-border: #f0dcae;
+  --input-bg: #ffffff;
+  --input-border: #d3d2c9;
+  --detail-bg: #f7faff;
+  --detail-border: #d5e2f5;
+  --bar-bg: #e8eae2;
+  --badge-closed: #ecebe4;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(23, 28, 18, 0.05), 0 10px 28px -20px rgba(23, 28, 18, 0.3);
+}
+body.dark {
+  --bg: #111512;
+  --card: #191e1a;
+  --card-2: #20261f;
+  --ink: #e6e8e2;
+  --ink-2: #b7bab0;
+  --muted: #8f9288;
+  --faint: #5f635b;
+  --line: #2d332c;
+  --line-2: #272c26;
+  --ring: rgba(255, 255, 255, 0.07);
+  --green-hover: #3a8f3f;
+  --green-text: #7cc47f;
+  --green-soft: #1c2b1d;
+  --green-soft-2: #243726;
+  --red-hover: #d64545;
+  --red-text: #e08a80;
+  --red-soft: #33201d;
+  --blue: #8ab4ea;
+  --blue-btn: #2a6fc4;
+  --blue-btn-hover: #3a7fd4;
+  --blue-soft: #1a2433;
+  --blue-border: #2c4a74;
+  --amber-text: #d9a642;
+  --amber-soft: #2e2712;
+  --amber-soft-2: #3a3118;
+  --pill-green-border: #2c4a2d;
+  --pill-amber-border: #4a3d1a;
+  --input-bg: #212620;
+  --input-border: #3a403a;
+  --detail-bg: #1a2230;
+  --detail-border: #2c4a74;
+  --bar-bg: #2b312a;
+  --badge-closed: #2b312a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px -20px rgba(0, 0, 0, 0.7);
+}
+* { box-sizing: border-box; }
+body, .card, .valve-row, .sched-card, .wx-day, .wx-hour, .pin-detail, #dropzone,
+input, select, button, td, th, .chain-pill, .status-badge, .role-pill {
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 680px; margin: 0 auto; padding: 20px 16px 48px;
+  background: var(--bg); color: var(--ink);
+  font-size: 15px; line-height: 1.45;
+}
+.hero {
+  background: linear-gradient(135deg, var(--green-dark), var(--green));
+  color: #fff; border-radius: var(--radius); padding: 20px 24px;
+  margin-bottom: 18px; box-shadow: var(--shadow);
+}
+.hero h1 { margin: 0; font-size: 1.35rem; letter-spacing: -0.01em; }
+.hero p { margin: 4px 0 0; font-size: 0.85rem; opacity: 0.85; }
+.hero-right { text-align: right; flex-shrink: 0; }
+#clock { font-size: 0.85rem; opacity: 0.92; margin-bottom: 7px; white-space: nowrap; }
+.theme-btn {
+  background: rgba(255, 255, 255, 0.16); box-shadow: none;
+  font-size: 0.78rem; padding: 6px 12px; margin: 0;
+}
+.theme-btn:hover { background: rgba(255, 255, 255, 0.28); }
+.card {
+  background: var(--card); border: 1px solid var(--ring);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.card > strong, .card > .row > strong {
+  display: block; font-size: 0.78rem; font-weight: 700;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-2);
+}
+.card > p.small { margin: 6px 0 12px; }
+.small { font-size: 0.82rem; color: var(--muted); }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+label { font-size: 0.85rem; color: var(--ink-2); }
+button {
+  font: inherit; font-size: 0.84rem; font-weight: 600;
+  padding: 9px 16px; border: none; border-radius: 9px;
+  background: var(--green); color: #fff; cursor: pointer; margin-right: 6px;
+  box-shadow: 0 1px 2px rgba(20, 30, 15, 0.15);
+}
+button:hover { background: var(--green-hover); }
+button:active { transform: translateY(1px); }
+button.stop { background: var(--red); }
+button.stop:hover { background: var(--red-hover); }
+button[disabled] { opacity: 0.45; cursor: default; }
+button[disabled]:hover { background: var(--green); }
+button[disabled]:active { transform: none; }
+input[type=number], input[type=text], select {
+  font: inherit; font-size: 0.88rem; padding: 7px 10px;
+  border: 1px solid var(--input-border); border-radius: 8px;
+  background: var(--input-bg); color: var(--ink);
+}
+input[type=number] { width: 74px; }
+input:focus, select:focus {
+  outline: 2px solid rgba(46, 125, 50, 0.45); outline-offset: 1px;
+  border-color: var(--green);
+}
+input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; }
+.zone { margin-bottom: 12px; font-size: 0.88rem; }
+.bar-bg { background: var(--bar-bg); border-radius: 99px; height: 10px; overflow: hidden; margin-top: 5px; }
+.bar-fill { background: linear-gradient(90deg, #67b56b, #2e7d32); height: 100%; border-radius: 99px; transition: width 0.5s ease; }
+.bar-fill.dry { background: linear-gradient(90deg, #e98f83, #c8433a); }
+.valve-row { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--card-2); }
+.valve-row .row { margin-bottom: 10px; }
+.valve-row .name { font-weight: 700; font-size: 0.95rem; }
+.valve-row button { padding: 6px 12px; font-size: 0.78rem; }
+table.statustable, table.pintable {
+  width: 100%; border-collapse: collapse; margin-top: 10px;
+  font-size: 0.85rem; font-variant-numeric: tabular-nums;
+}
+table.statustable th, table.pintable th {
+  text-align: left; font-size: 0.68rem; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+}
+table.statustable td, table.pintable td { padding: 8px 10px; border-bottom: 1px solid var(--line-2); }
+table.statustable tr:last-child td { border-bottom: none; }
+table.statustable td.dry { color: var(--red-text); font-weight: 700; }
+table.statustable td.ok { color: var(--green-text); font-weight: 700; }
+table.pintable { font-size: 0.82rem; }
+table.pintable tbody tr { cursor: pointer; }
+table.pintable tbody tr:hover td { background: var(--blue-soft); }
+table.pintable tr.assigned td { background: var(--green-soft); }
+table.pintable tr.assigned:hover td { background: var(--green-soft-2); }
+table.pintable tr.unsafe td { background: var(--red-soft); color: var(--red-text); }
+table.pintable tr.notbroken td { color: var(--faint); }
+table.pintable tr.notbroken, table.pintable tr.unsafe { cursor: default; }
+table.pintable tr.notbroken:hover td { background: transparent; }
+table.pintable tr.unsafe:hover td { background: var(--red-soft); }
+table.pintable tr.strapping td { background: var(--amber-soft); }
+table.pintable tr.strapping td.status { color: var(--amber-text); font-weight: 600; }
+table.pintable tr.strapping:hover td { background: var(--amber-soft-2); }
+table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 600; }
+.gpio-num { font-weight: 700; }
+.role-pill {
+  display: inline-block; background: var(--green); color: #fff;
+  border-radius: 99px; padding: 2px 10px; font-size: 0.72rem; font-weight: 600;
+}
+.status-badge {
+  display: inline-block; border-radius: 99px; padding: 3px 11px;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em;
+}
+.status-badge.open { background: var(--blue-soft); color: var(--blue); }
+.status-badge.closed { background: var(--badge-closed); color: var(--ink-2); }
+.kv-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.85rem; }
+.kv-row .k { color: var(--muted); }
+.sched-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--card-2); }
+.sched-fields { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.sched-fields input[type=number] { width: 58px; }
+.sched-fields label { display: flex; align-items: center; gap: 5px; }
+.sched-valves {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.85rem;
+}
+.sched-valves label { display: flex; align-items: center; gap: 5px; color: var(--ink-2); }
+#events { max-height: 320px; overflow-y: auto; font-size: 0.8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#events div { padding: 3px 0; border-bottom: 1px dashed var(--line-2); }
+#events div:last-child { border-bottom: none; }
+.legend { font-size: 0.72rem; color: var(--muted); margin-top: 10px; }
+.pin-detail {
+  border: 1px solid var(--detail-border); background: var(--detail-bg);
+  border-radius: 12px; padding: 14px 16px; margin-top: 14px;
+}
+.pin-detail .role-picker { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.pin-detail .role-picker button { background: var(--blue-btn); }
+.pin-detail .role-picker button:hover { background: var(--blue-btn-hover); }
+.pin-detail .fields { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.pin-detail .fields label { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.pin-detail .fields input, .pin-detail .fields select { flex: 1; max-width: 170px; }
+.pin-detail .actions { margin-top: 14px; display: flex; gap: 8px; }
+.clear-btn { color: var(--red-text); cursor: pointer; font-weight: 700; font-size: 0.8rem; }
+.chain-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 11px 0; border-bottom: 1px solid var(--line-2); font-size: 0.85rem;
+}
+.chain-row:last-child { border-bottom: none; }
+.chain-pill {
+  border-radius: 99px; padding: 4px 12px; white-space: nowrap;
+  font-weight: 600; font-size: 0.78rem; border: 1px solid transparent;
+}
+.chain-pill.zone { background: var(--green-soft); color: var(--green-text); border-color: var(--pill-green-border); }
+.chain-pill.valve { background: var(--blue-soft); color: var(--blue); border-color: var(--blue-border); }
+.chain-pill.flow { background: var(--amber-soft); color: var(--amber-text); border-color: var(--pill-amber-border); }
+.chain-arrow { color: var(--faint); font-size: 0.78rem; }
+.chain-empty { color: var(--muted); font-size: 0.82rem; }
+.status-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 14px;
+}
+.status-banner .msg { font-size: 1.15rem; font-weight: 700; }
+.status-banner .sub { display: block; margin-top: 2px; }
+.mini-title {
+  display: block; font-size: 0.78rem; font-weight: 700;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.status-columns { display: grid; grid-template-columns: 1fr; gap: 18px; }
+@media (min-width: 920px) {
+  .status-columns { grid-template-columns: 3fr 2fr; }
+}
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(10, 12, 9, 0.5);
+  backdrop-filter: blur(2px); display: flex; align-items: center;
+  justify-content: center; z-index: 20; padding: 16px;
+}
+.modal {
+  background: var(--card); border-radius: 16px; padding: 20px 22px;
+  max-width: 560px; width: 100%; max-height: 85vh; overflow-y: auto;
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5);
+}
+.modal strong { font-size: 0.95rem; }
+.tp-display { font-size: 2.1rem; font-weight: 700; text-align: center; margin: 12px 0 10px; font-variant-numeric: tabular-nums; }
+.tp-ampm { display: flex; gap: 8px; justify-content: center; }
+.tp-ampm button, .tp-grid button {
+  background: var(--card-2); color: var(--ink); box-shadow: none;
+  border: 1px solid var(--line); margin: 0; padding: 9px 0; font-weight: 600;
+}
+.tp-ampm button { width: 70px; }
+.tp-ampm button:hover, .tp-grid button:hover { background: var(--blue-soft); border-color: var(--blue-border); }
+.tp-ampm button.active, .tp-grid button.active { background: var(--green); border-color: var(--green); color: #fff; }
+.tp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 6px; }
+.time-chip {
+  background: var(--blue-soft); color: var(--blue); border: 1px solid var(--blue-border);
+  box-shadow: none; font-weight: 700; padding: 7px 14px; font-variant-numeric: tabular-nums;
+}
+.time-chip:hover { background: var(--blue-soft); border-color: var(--blue); }
+.weather-card .wx-day {
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+  text-align: center; font-size: 0.75rem; flex: 1; min-width: 82px;
+  cursor: pointer; background: var(--card-2);
+}
+.weather-card .wx-day:hover { border-color: var(--blue-border); background: var(--blue-soft); }
+.weather-card .wx-day.active { border-color: var(--blue); background: var(--blue-soft); }
+#weather-hourly { display: none; }
+#weather-hourly.open {
+  display: flex; gap: 6px; margin-top: 10px; overflow-x: auto; padding-bottom: 4px;
+}
+.wx-hour {
+  flex: 0 0 auto; min-width: 58px; text-align: center; font-size: 0.72rem;
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 4px; background: var(--card-2);
+}
+#dropzone {
+  border: 2px dashed var(--input-border); border-radius: 12px; padding: 26px;
+  text-align: center; cursor: pointer; color: var(--muted); font-size: 0.88rem;
+}
+#dropzone:hover { background: var(--card-2); border-color: var(--green); }
+#upload-status { margin-top: 8px; }
+@media (max-width: 480px) {
+  body { padding: 12px 10px 40px; }
+  .card { padding: 14px; }
+  .hero { padding: 16px 18px; }
+}
+@media (min-width: 920px) {
+  body { max-width: 1160px; }
+  .cards { columns: 2; column-gap: 16px; }
+  .cards > .card { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="row" style="align-items:flex-start">
+    <div>
+      <h1>Planter Control</h1>
+      <p>ESP32 watering controller - sensors, valves, and schedules</p>
+    </div>
+    <div class="hero-right">
+      <div id="clock">-</div>
+      <button class="theme-btn" id="theme-btn" onclick="toggleTheme()">Dark mode</button>
+    </div>
+  </div>
+</header>
+
+<div class="card weather-card">
+  <div class="row">
+    <strong>Local Weather</strong>
+    <span class="row" style="gap:6px">
+      <label>ZIP <input id="weather-zip" type="text" size="6" placeholder="auto"></label>
+      <button onclick="saveWeatherZip()">Set</button>
+    </span>
+  </div>
+  <div id="weather-now" style="margin-top:10px"></div>
+  <div id="weather-forecast" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap"></div>
+  <div id="weather-hourly"></div>
+  <div id="weather-status" class="small" style="margin-top:8px"></div>
+</div>
+
+<div class="card">
+  <div id="status-banner" class="status-banner"></div>
+  <div class="status-columns">
+    <div>
+      <span class="mini-title">System Status</span>
+      <table class="statustable">
+        <thead><tr><th>Zone</th><th>Raw ADC</th><th>Moisture</th><th>Dry below</th><th>Status</th></tr></thead>
+        <tbody id="status-zones"></tbody>
+      </table>
+      <table class="statustable" style="margin-top:14px">
+        <thead><tr><th>Valve</th><th>State</th><th>Last used</th><th>Ran for</th><th>Water</th></tr></thead>
+        <tbody id="status-valves"></tbody>
+      </table>
+      <div class="kv-row" style="margin-top:10px"><span class="k">Uptime</span><span id="status-uptime">-</span></div>
+      <div class="kv-row"><span class="k">Clock</span><span id="status-clock">-</span></div>
+      <div class="kv-row"><span class="k">WiFi</span><span id="status-wifi">-</span></div>
+      <div class="kv-row"><span class="k">CPU load</span><span id="status-cpu">-</span></div>
+      <div class="kv-row"><span class="k">Memory</span><span id="status-mem">-</span></div>
+      <p class="small" style="margin-top:6px">Water used fills in once a flow meter is wired to a valve.</p>
+    </div>
+    <div>
+      <span class="mini-title">Recent Events</span>
+      <div id="events"></div>
+    </div>
+  </div>
+</div>
+
+<div class="cards">
+
+<div class="card">
+  <strong>Zone Controls</strong>
+  <p class="small">Water a whole zone - its valves open one at a time, in order.</p>
+  <div id="zone-controls"></div>
+</div>
+
+<div class="card">
+  <strong>Valve Controls</strong>
+  <p class="small">Tap a valve to toggle it open or closed, or Quick Water for a timed 30-second run. Valves always run one at a time. Valve setup (pins, names, flow meters) lives in the GPIO Pin Map card.</p>
+  <div id="valve-master" style="margin-bottom:10px"></div>
+  <div id="valve-controls"></div>
+</div>
+
+<div class="card">
+  <strong>Moisture Readings</strong>
+  <p class="small">Live wetness per zone. Zones are set up in the Watering Zones card.</p>
+  <div id="zones"></div>
+</div>
+
+<div class="card">
+  <strong>Moisture History</strong>
+  <p class="small">Percent moisture per zone, one reading per minute (about the last 3 hours). Hover the chart for details. History resets on reboot.</p>
+  <div id="history-wrap" style="position:relative">
+    <svg id="history-chart" viewBox="0 0 600 170" style="width:100%;height:auto;display:block"></svg>
+    <div id="history-tip" class="small" style="position:absolute;display:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 9px;pointer-events:none;box-shadow:var(--shadow);z-index:5"></div>
+  </div>
+  <div id="history-legend" class="small" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px"></div>
+</div>
+
+<div class="card">
+  <strong>Environment</strong>
+  <p class="small">Optional extra sensors. An AHT20+BMP280 temp/humidity/pressure board plugs into the same I2C bus as the ADS1115 (auto-detected at boot - just wire it and reboot). An LM393 rain sensor's DO pin goes to any free GPIO - assign it in the pin map.</p>
+  <div id="env-body"></div>
+</div>
+
+<div class="card">
+  <strong>Watering Zones</strong>
+  <p class="small">Each zone is one soil moisture sensor at a spot in your garden/planter. When a zone reads drier than its "Dry below" threshold, it opens its assigned valve(s) one at a time, each for that zone's "Water for" run time - then waits for the soak period (Watering Settings), re-reads the sensor, and waters again if still below the "Water until" target, up to the max cycles cap. Once done, the zone waits out the cooldowns before it can re-trigger. Changes here apply immediately, no reboot.</p>
+  <div id="zones-editor"></div>
+  <div style="margin-top:12px">
+    <button onclick="addZone()">+ Add Zone</button>
+    <button onclick="saveZones()">Save Zones</button>
+  </div>
+</div>
+
+<div class="card">
+  <strong>Watering Schedules</strong>
+  <p class="small">Program as many watering times per day as you like. Tap the time to change it. Each schedule can target valves directly and/or whole zones (a zone runs whatever valves it's mapped to when the schedule fires) - everything opens one at a time, in order, for the set duration.</p>
+  <div id="schedules"></div>
+  <div style="margin-top:10px">
+    <button onclick="addSchedule()">+ Add Time</button>
+    <button onclick="saveSchedules()">Save Schedules</button>
+  </div>
+</div>
+
+<div class="card">
+  <strong>Watering Settings</strong>
+  <p class="small">Global behavior for automatic (moisture-triggered) watering. Each zone sets its own run time in Watering Zones; the default below covers the per-valve Trigger Watering button and any zone without its own.</p>
+  <label class="kv-row"><span class="k">Default watering run time</span><span><input id="ws-duration" type="number" min="1"> sec</span></label>
+  <label class="kv-row"><span class="k">Min time between moisture waterings</span><span><input id="ws-interval" type="number" min="0"> min</span></label>
+  <label class="kv-row"><span class="k">Cooldown after a scheduled watering <span class="small">before moisture watering can re-trigger the same valve</span></span><span><input id="ws-lockout" type="number" min="0"> hr</span></label>
+  <label class="kv-row"><span class="k">Soak wait before re-check <span class="small">after watering, wait this long, re-read the sensor, and water again if still below the zone's wet target</span></span><span><input id="ws-soak" type="number" min="20"> sec</span></label>
+  <label class="kv-row"><span class="k">Max waterings per dry event <span class="small">1 = no re-check; caps runaway watering if a sensor fails</span></span><span><input id="ws-cycles" type="number" min="1" max="10"></span></label>
+  <label class="kv-row"><span class="k">Scheduled watering enabled</span><input id="ws-daily" type="checkbox"></label>
+  <label class="kv-row"><span class="k">Moisture-triggered watering enabled</span><input id="ws-moisture" type="checkbox"></label>
+  <label class="kv-row"><span class="k">UTC offset (hours) <span class="small">EST -5 / EDT -4, CST -6, MST -7, PST -8; adjust for DST</span></span><span><input id="ws-tz" type="number" step="0.5" min="-12" max="14"></span></label>
+  <div style="margin-top:12px">
+    <button onclick="saveWateringSettings()">Save Settings</button>
+  </div>
+</div>
+
+<div class="card">
+  <strong>GPIO Pin Map</strong>
+  <p class="small">Click any pin to see what it does, or to assign a free one. Solenoid valves and flow meters live directly on a GPIO pin. Moisture sensors don't - they wire into the ADS1115 board's 4 channels (assigned to zones in the Watering Zones card above), and the ADS1115 itself talks to the ESP32 over 2 shared I2C pins. Changes here reboot the ESP32 to take effect.</p>
+  <table class="pintable">
+    <thead><tr><th>GPIO</th><th>Status</th><th>Assigned to</th></tr></thead>
+    <tbody id="pin-table"></tbody>
+  </table>
+  <div class="legend">Amber rows are boot-strapping pins - assignable, but read the warning when you click one. Red rows are the SPI flash and USB serial pins - never assignable. Greyed pins aren't on the WROOM-32 board. Input-only pins (34/35/36/39) can host a flow meter but not a valve.</div>
+  <div id="pin-detail" class="pin-detail" style="display:none"></div>
+</div>
+
+<div class="card">
+  <strong>Update Code</strong>
+  <p class="small">Drag .mpy, .py or .html files here (or click to browse) to update the firmware without Thonny - this includes index.html, the dashboard page itself. Normal updates are the .mpy files from the build folder; uploading a module as .py or .mpy automatically deletes its counterpart so the old copy can never shadow the new one. Reboot afterward to apply.</p>
+  <div id="dropzone">
+    Drop .mpy/.py/.html files here or click to browse
+  </div>
+  <input type="file" id="file-input" multiple accept=".mpy,.py,.html" style="display:none">
+  <div id="upload-status" class="small" style="margin-top:8px"></div>
+  <div style="margin-top:10px">
+    <button onclick="rebootDevice()">Reboot Now</button>
+  </div>
+</div>
+
+<div class="card">
+  <strong>WiFi</strong>
+  <p class="small">Saved network: <b id="wifi-ssid">-</b>. If WiFi stays down for 5 minutes, the planter opens a rescue hotspot ("Planter-Setup-xxxx") while watering keeps running - join it from any device and this dashboard is at http://192.168.4.1, where you can fix the network below. Changing WiFi reboots the ESP32.</p>
+  <div class="row" style="flex-wrap:wrap">
+    <label>Network <input id="wifi-new-ssid" type="text" placeholder="SSID"></label>
+    <label>Password <input id="wifi-new-pass" type="password"></label>
+  </div>
+  <div style="margin-top:10px">
+    <button onclick="saveWifi()">Save &amp; Reboot</button>
+  </div>
+</div>
+
+<div class="card">
+  <strong>Config Backup</strong>
+  <p class="small">Download this device's full configuration (zones, valves, pin map, schedules, settings - everything except WiFi) as a file, or restore one. Restoring replaces the current config and reboots. Handy for backups, or for loading a preset onto a fresh kit.</p>
+  <div>
+    <button onclick="downloadConfig()">Download Config</button>
+    <button onclick="document.getElementById('config-file').click()">Upload Config</button>
+    <input type="file" id="config-file" accept=".json,application/json" style="display:none">
+  </div>
+  <div id="config-status" class="small" style="margin-top:8px"></div>
+</div>
+
+</div>
+
+<div class="card" id="ota-card">
+  <div class="row" style="align-items:baseline;flex-wrap:wrap;gap:10px">
+    <strong>Firmware</strong>
+    <span class="small" id="ota-version">version -</span>
+    <span class="small" id="ota-badge" style="display:none"></span>
+  </div>
+  <div class="small" id="ota-detail" style="margin-top:6px">
+    Checked: <span id="ota-checked">never</span> &middot;
+    Updated: <span id="ota-updated">never</span>
+  </div>
+  <div id="ota-status" class="small" style="margin-top:6px"></div>
+  <div style="margin-top:10px">
+    <button onclick="otaCheck()" id="ota-check-btn">Check for Updates</button>
+    <button onclick="otaApply()" id="ota-apply-btn" style="display:none">Update Now</button>
+  </div>
+</div>
+
+<div id="time-modal" class="modal-backdrop" style="display:none">
+  <div class="modal" style="max-width:340px">
+    <div class="row"><strong>Set Time</strong><span class="clear-btn" onclick="closeTimePicker()">X close</span></div>
+    <div id="tp-display" class="tp-display">6:00 AM</div>
+    <div class="tp-ampm">
+      <button id="tp-am" onclick="tpSetAmPm(false)">AM</button>
+      <button id="tp-pm" onclick="tpSetAmPm(true)">PM</button>
+    </div>
+    <span class="mini-title" style="margin-top:14px">Hour</span>
+    <div id="tp-hours" class="tp-grid"></div>
+    <span class="mini-title" style="margin-top:12px">Minute</span>
+    <div id="tp-mins" class="tp-grid"></div>
+    <div style="margin-top:16px"><button onclick="tpDone()">Done</button></div>
+  </div>
+</div>
+
+<script>
+// ---------- Theme + header clock ----------
+function applyTheme(dark) {
+  document.body.classList.toggle('dark', dark);
+  document.getElementById('theme-btn').textContent = dark ? 'Light mode' : 'Dark mode';
+}
+
+function toggleTheme() {
+  const dark = !document.body.classList.contains('dark');
+  try { localStorage.setItem('planter-theme', dark ? 'dark' : 'light'); } catch (e) {}
+  applyTheme(dark);
+}
+
+function updateClock() {
+  const d = new Date();
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  document.getElementById('clock').textContent =
+    days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate() + ' - ' + fmtClock(d);
+}
+
+function fmtAgo(nowTs, ts) {
+  if (!ts) return 'never';
+  const diff = Math.max(0, Math.floor(nowTs - ts));
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function fmtDur(sec) {
+  sec = Math.round(sec);
+  if (sec < 60) return sec + 's';
+  return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+}
+
+// Plant-themed status art - inline SVG only (ASCII-safe for the ESP32).
+function plantArt(state, size) {
+  const pot = '<path d="M8 19h12l-1.6 7H9.6z" fill="#b06a3b"/><rect x="7" y="17.5" width="14" height="2.4" rx="1.2" fill="#8a4f2a"/>';
+  const stem = '<path d="M14 17.5V9" stroke="#2e7d32" stroke-width="2" fill="none" stroke-linecap="round"/>';
+  const happyLeaves =
+    '<path d="M14 12C10.8 11.2 9 8.8 9 6c3 0 5.4 2 5 6z" fill="#43a047"/>' +
+    '<path d="M14 14c3.2-.8 5-3.2 5-6-3 0-5.4 2-5 6z" fill="#66bb6a"/>' +
+    '<circle cx="14" cy="7.5" r="1.6" fill="#81c784"/>';
+  const dryStem = '<path d="M14 17.5c0-3.5.4-5.5 3.5-7" stroke="#a68a2e" stroke-width="2" fill="none" stroke-linecap="round"/>';
+  const dryLeaves =
+    '<path d="M17.5 10.5c2.2 1 3 3 2.6 5-2.2-.6-3.3-2.6-2.6-5z" fill="#c9a23a"/>' +
+    '<path d="M13.5 12c-2.4.4-4.2-.6-5-2.5 2.3-.7 4.3.4 5 2.5z" fill="#b8862b"/>';
+  const cracks = '<g stroke="#8a6a3a" stroke-width="1"><line x1="10.5" y1="20.5" x2="12" y2="22"/><line x1="16" y1="20.5" x2="15" y2="22.5"/></g>';
+  const drops = '<g stroke="#2a78d6" stroke-width="2" stroke-linecap="round"><line x1="7" y1="3" x2="6.4" y2="5.5"/><line x1="11" y1="1.5" x2="10.4" y2="4"/><line x1="20" y1="3" x2="19.4" y2="5.5"/></g>';
+  const sparkle = '<g fill="#2a78d6"><circle cx="9.5" cy="7" r="1.1"/><circle cx="19" cy="10" r="1.1"/><circle cx="17" cy="5" r="0.9"/></g>';
+  const grayPlant =
+    '<path d="M14 17.5V10" stroke="#9aa3ad" stroke-width="2" fill="none" stroke-linecap="round"/>' +
+    '<path d="M14 13c-2.6-.6-4.2-2.6-4.2-5 2.6 0 4.6 1.8 4.2 5z" fill="#b9c0c9"/>' +
+    '<text x="17" y="9" font-size="8" font-weight="bold" fill="#8a93a6">?</text>';
+  let inner;
+  if (state === 'watering') inner = drops + stem + happyLeaves + pot;
+  else if (state === 'watered') inner = sparkle + stem + happyLeaves + pot;
+  else if (state === 'dry') inner = dryStem + dryLeaves + pot + cracks;
+  else if (state === 'nodata') inner = grayPlant + pot;
+  else inner = stem + happyLeaves + pot;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 28 27">${inner}</svg>`;
+}
+
+function systemStatus(s, valveEntries) {
+  const openValve = valveEntries.find(([n, v]) => v.open);
+  if (openValve) {
+    return { state: 'watering', msg: 'Watering now',
+      sub: openValve[0] + ' is open (' + (openValve[1].open_reason || 'manual') + ', ' + fmtDur(openValve[1].seconds_open) + ' so far)' };
+  }
+  const dry = (s.moisture || []).filter(z => z.percent < z.threshold);
+  if (dry.length) {
+    const names = dry.map(z => z.name).join(', ');
+    return autoWateringEnabled
+      ? { state: 'dry', msg: 'Thirsty', sub: names + ' below threshold - watering will kick in on the next check (respecting cooldowns)' }
+      : { state: 'dry', msg: 'Dry', sub: names + ' below threshold - but moisture-triggered watering is turned OFF in Watering Settings' };
+  }
+  let lastClose = 0, lastName = null;
+  valveEntries.forEach(([n, v]) => {
+    if (v.last_close_ts && v.last_close_ts > lastClose) { lastClose = v.last_close_ts; lastName = n; }
+  });
+  if (lastClose && (s.now - lastClose) < 15 * 60) {
+    return { state: 'watered', msg: 'Just watered', sub: lastName + ' finished ' + fmtAgo(s.now, lastClose) };
+  }
+  if (!(s.moisture || []).length) {
+    return { state: 'nodata', msg: 'Waiting for sensors', sub: 'No moisture readings yet - give it a minute, or check the ADS1115 wiring' };
+  }
+  return { state: 'happy', msg: 'All good!', sub: 'Every zone reads above its dry threshold' };
+}
+
+async function refresh() {
+  const res = await fetch('/api/status');
+  const s = await res.json();
+  const valveEntries = Object.entries(s.valves || {});
+
+  // Status banner - the one-glance answer to "how's my garden?"
+  const st = systemStatus(s, valveEntries);
+  document.getElementById('status-banner').innerHTML =
+    plantArt(st.state, 56) +
+    `<div><span class="msg">${st.msg}</span><span class="sub small">${st.sub}</span></div>`;
+
+  // Valve controls card - one toggle button per valve + timed quick water
+  const masterDiv = document.getElementById('valve-master');
+  masterDiv.innerHTML = valveEntries.length > 1
+    ? `<button onclick="waterAllValves()">Quick Water All (30s each, in order)</button>`
+    : '';
+  const controlsDiv = document.getElementById('valve-controls');
+  controlsDiv.innerHTML = valveEntries.map(([name, v]) => {
+    const zonesUsing = zonesConfig.filter(z => z.valves.includes(name)).map(z => z.name);
+    const zoneNote = zonesUsing.length
+      ? 'Waters: ' + zonesUsing.join(', ')
+      : 'Not assigned to any zone';
+    const toggle = v.open
+      ? `<button class="stop" onclick="setValve('${name}', 'close')">OPEN (${fmtDur(v.seconds_open)}) - tap to close</button>`
+      : `<button onclick="setValve('${name}', 'open')">Closed - tap to open</button>`;
+    return `
+    <div class="valve-row">
+      <div class="row"><span class="name">${name}</span></div>
+      <div>
+        ${toggle}
+        <button onclick="quickWater('${name}')" ${v.open ? 'disabled' : ''}>Quick Water (30s)</button>
+      </div>
+      <div class="small" style="margin-top:8px">${zoneNote}</div>
+    </div>`;
+  }).join('') || '<div class="small">No valves configured yet - add one in the GPIO Pin Map.</div>';
+
+  // Zone controls card - water a whole zone (its valves run in order)
+  const moistureByName = {};
+  (s.moisture || []).forEach(z => { moistureByName[z.name] = z; });
+  const zoneControlsDiv = document.getElementById('zone-controls');
+  zoneControlsDiv.innerHTML = zonesConfig.map(z => {
+    const m = moistureByName[z.name];
+    const reading = m
+      ? m.percent + '%' + (m.percent < m.threshold ? ' (dry)' : '')
+      : 'no reading yet';
+    const valveList = z.valves.length ? z.valves.join(', ') : 'no valves assigned';
+    return `
+    <div class="valve-row">
+      <div class="row"><span class="name">${z.name}</span><span class="small">${reading}</span></div>
+      <div class="row">
+        <span class="small">Valves: ${valveList}</span>
+        <button ${z.valves.length ? '' : 'disabled'} onclick="waterZone('${z.name}')">Water Zone</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="small">No zones configured yet - add one in the Watering Zones card.</div>';
+
+  const zonesDiv = document.getElementById('zones');
+  zonesDiv.innerHTML = '';
+  (s.moisture || []).forEach(z => {
+    const dry = z.percent < z.threshold;
+    zonesDiv.innerHTML += `
+      <div class="zone">
+        <div class="row"><span>${z.name}</span><span>${z.percent}% (threshold ${z.threshold}%)</span></div>
+        <div class="bar-bg"><div class="bar-fill ${dry ? 'dry' : ''}" style="width:${z.percent}%"></div></div>
+      </div>`;
+  });
+
+  // System Status card
+  const statusZones = document.getElementById('status-zones');
+  statusZones.innerHTML = (s.moisture || []).map(z => {
+    const dry = z.percent < z.threshold;
+    return `<tr>
+      <td>${z.name}</td>
+      <td>${z.raw}</td>
+      <td class="${dry ? 'dry' : 'ok'}">${z.percent}%</td>
+      <td>${z.threshold}%</td>
+      <td class="${dry ? 'dry' : 'ok'}">${dry ? 'DRY' : 'OK'}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="small">No readings yet.</td></tr>';
+
+  const statusValves = document.getElementById('status-valves');
+  statusValves.innerHTML = valveEntries.map(([name, v]) => {
+    const badge = v.open
+      ? `<span class="status-badge open">OPEN - ${v.seconds_open}s</span>`
+      : `<span class="status-badge closed">CLOSED</span>`;
+    const lastUsed = v.open
+      ? 'watering now (' + (v.open_reason || 'manual') + ')'
+      : (v.last_close_ts
+          ? fmtAgo(s.now, v.last_close_ts) + ' (' + (v.last_close_reason || 'manual') + ')'
+          : 'never');
+    const ranFor = v.open
+      ? fmtDur(v.seconds_open)
+      : (v.last_open_duration ? fmtDur(v.last_open_duration) : '-');
+    const water = v.last_volume_l == null
+      ? '-'
+      : (v.last_volume_l * 0.264172).toFixed(2) + ' gal';
+    return `<tr>
+      <td>${name}</td>
+      <td>${badge}</td>
+      <td>${lastUsed}</td>
+      <td>${ranFor}</td>
+      <td>${water}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="small">No valves configured yet.</td></tr>';
+  const upMin = Math.floor(s.uptime_sec / 60);
+  document.getElementById('status-uptime').textContent =
+    upMin >= 60 ? Math.floor(upMin / 60) + 'h ' + (upMin % 60) + 'm' : upMin + ' min';
+  document.getElementById('status-clock').textContent = s.time_synced
+    ? 'synced (NTP)'
+    : 'NOT SYNCED - scheduled watering paused until the clock syncs';
+  document.getElementById('status-wifi').textContent = s.wifi_connected
+    ? 'connected'
+    : 'DOWN - retrying; rescue hotspot opens after 5 min';
+  const memTotal = (s.mem_free != null && s.mem_alloc != null) ? s.mem_free + s.mem_alloc : null;
+  document.getElementById('status-mem').textContent = memTotal
+    ? Math.round(100 * s.mem_alloc / memTotal) + '% used, ' + Math.round(s.mem_free / 1024) + ' KB free' + (s.mem_free < 20480 ? ' - LOW' : '')
+    : (s.mem_free != null ? Math.round(s.mem_free / 1024) + ' KB free' : '-');
+  document.getElementById('status-cpu').textContent = s.cpu_percent != null
+    ? '~' + s.cpu_percent + '%'
+    : '-';
+
+  renderOta(s.update, s.now);
+
+  // Environment card (optional AHT20/BMP280/rain sensors)
+  const e = s.env || {};
+  const envRows = [];
+  if (e.temp_c != null) envRows.push(['Temperature', Math.round(e.temp_c * 9 / 5 + 32) + '&deg;F (' + e.temp_c + '&deg;C)']);
+  if (e.humidity != null) envRows.push(['Humidity', e.humidity + '%']);
+  if (e.pressure_hpa != null) envRows.push(['Pressure', (e.pressure_hpa * 0.02953).toFixed(2) + ' inHg (' + e.pressure_hpa + ' hPa)']);
+  if (e.rain != null) envRows.push(['Rain sensor', e.rain ? '<b style="color:var(--blue)">WET - rain detected</b>' : 'dry']);
+  document.getElementById('env-body').innerHTML = envRows.length
+    ? envRows.map(r => `<div class="kv-row"><span class="k">${r[0]}</span><span>${r[1]}</span></div>`).join('')
+    : '<div class="small">No environment sensors detected yet. The AHT20+BMP280 board is found automatically at boot; the rain sensor needs a GPIO assigned in the pin map.</div>';
+}
+
+async function waterZone(name) {
+  await fetch('/api/zone/trigger?zone=' + encodeURIComponent(name), { method: 'POST' });
+  refresh();
+}
+
+// ---------- Watering settings ----------
+let autoWateringEnabled = true;  // mirrors moisture_watering_enabled for the status banner
+
+async function loadWateringSettings() {
+  const res = await fetch('/api/settings');
+  const s = await res.json();
+  document.getElementById('ws-duration').value = s.supplemental_duration_sec;
+  document.getElementById('ws-interval').value = Math.round(s.min_supplemental_interval_sec / 60);
+  document.getElementById('ws-lockout').value = Math.round((s.post_daily_lockout_sec || 0) / 3600);
+  document.getElementById('ws-soak').value = s.soak_recheck_sec || 30;
+  document.getElementById('ws-cycles').value = s.max_water_cycles || 3;
+  document.getElementById('ws-daily').checked = !!s.daily_enabled;
+  document.getElementById('ws-moisture').checked = !!s.moisture_watering_enabled;
+  document.getElementById('ws-tz').value = (s.tz_offset_min || 0) / 60;
+  autoWateringEnabled = !!s.moisture_watering_enabled;
+  weatherZip = s.weather_zip || '';
+  document.getElementById('weather-zip').value = weatherZip;
+  loadWeather();
+}
+
+// ---------- Local weather (browser-side, Open-Meteo) ----------
+let weatherZip = '';
+const WMO = {
+  0: 'Clear', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Overcast',
+  45: 'Fog', 48: 'Icy fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+  61: 'Light rain', 63: 'Rain', 65: 'Heavy rain', 66: 'Freezing rain', 67: 'Freezing rain',
+  71: 'Light snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains',
+  80: 'Light showers', 81: 'Showers', 82: 'Heavy showers', 85: 'Snow showers', 86: 'Snow showers',
+  95: 'Thunderstorm', 96: 'Storm w/ hail', 99: 'Storm w/ hail',
+};
+
+async function saveWeatherZip() {
+  weatherZip = document.getElementById('weather-zip').value.trim();
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ weather_zip: weatherZip }),
+  });
+  loadWeather();
+}
+
+async function resolveLocation() {
+  if (weatherZip) {
+    const r = await fetch('https://api.zippopotam.us/us/' + encodeURIComponent(weatherZip));
+    if (!r.ok) throw new Error('ZIP ' + weatherZip + ' not found');
+    const j = await r.json();
+    const p = j.places[0];
+    return { lat: +p.latitude, lon: +p.longitude, label: p['place name'] + ', ' + p['state abbreviation'] };
+  }
+  const r = await fetch('https://ipapi.co/json/');
+  const j = await r.json();
+  if (!j.latitude) throw new Error('could not auto-locate from IP');
+  return { lat: j.latitude, lon: j.longitude, label: (j.city || 'your area') + (j.region_code ? ', ' + j.region_code : '') + ' (auto from IP)' };
+}
+
+// Small inline SVG condition art - kept ASCII-only on purpose (emoji and
+// other multi-byte characters have corrupted in transit to the ESP32 before).
+function wxIcon(code, isDay, size) {
+  const sun = '<circle cx="12" cy="12" r="5" fill="#f2b01e"/><g stroke="#f2b01e" stroke-width="2" stroke-linecap="round">' +
+    [[12, 2, 12, 4.5], [12, 19.5, 12, 22], [2, 12, 4.5, 12], [19.5, 12, 22, 12],
+     [4.9, 4.9, 6.7, 6.7], [17.3, 17.3, 19.1, 19.1], [4.9, 19.1, 6.7, 17.3], [17.3, 6.7, 19.1, 4.9]]
+      .map(l => `<line x1="${l[0]}" y1="${l[1]}" x2="${l[2]}" y2="${l[3]}"/>`).join('') + '</g>';
+  const moon = '<path d="M20 13.5A8 8 0 0 1 10.5 4 8 8 0 1 0 20 13.5z" fill="#8a93a6"/>';
+  const cloud = fill => `<path d="M7 18h9.5a4 4 0 0 0 .6-7.96A5.5 5.5 0 0 0 6.4 8.9 4.5 4.5 0 0 0 7 18z" fill="${fill}"/>`;
+  const drops = '<g stroke="#2a78d6" stroke-width="2" stroke-linecap="round"><line x1="9" y1="20" x2="8" y2="23"/><line x1="13" y1="20" x2="12" y2="23"/><line x1="17" y1="20" x2="16" y2="23"/></g>';
+  const flakes = '<g fill="#7fb3e8"><circle cx="9" cy="21.5" r="1.3"/><circle cx="13.5" cy="22.5" r="1.3"/><circle cx="17" cy="21" r="1.3"/></g>';
+  const bolt = '<path d="M13 16l-3.5 5h2.5l-1.5 5 5-6.5h-2.5l2-3.5z" fill="#eda100"/>';
+  const fogLines = '<g stroke="#9aa3ad" stroke-width="2" stroke-linecap="round"><line x1="5" y1="21" x2="19" y2="21"/><line x1="7" y1="24" x2="17" y2="24"/></g>';
+  let inner;
+  if (code === 0) inner = isDay ? sun : moon;
+  else if (code <= 2) inner = (isDay
+    ? '<g transform="translate(-3,-4) scale(0.75)">' + sun + '</g>'
+    : '<g transform="translate(-2,-4) scale(0.7)">' + moon + '</g>') + cloud('#b9c0c9');
+  else if (code === 3) inner = cloud('#9aa3ad');
+  else if (code <= 48) inner = cloud('#b9c0c9') + fogLines;
+  else if (code <= 67 || (code >= 80 && code <= 82)) inner = cloud('#9aa3ad') + drops;
+  else if (code <= 77 || code === 85 || code === 86) inner = cloud('#b9c0c9') + flakes;
+  else inner = cloud('#6f7780') + bolt;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 27" style="vertical-align:middle">${inner}</svg>`;
+}
+
+function fmtClock(d) {
+  let h = d.getHours();
+  const m = ('0' + d.getMinutes()).slice(-2);
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return h + ':' + m + ' ' + ap;
+}
+
+let weatherData = null;   // last Open-Meteo response
+let weatherLoc = null;
+let weatherDayIdx = null; // which forecast day is expanded to hourly
+
+async function loadWeather() {
+  const status = document.getElementById('weather-status');
+  try {
+    status.textContent = 'Loading weather...';
+    const loc = await resolveLocation();
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
+      '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day' +
+      '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max' +
+      '&hourly=temperature_2m,precipitation_probability,weather_code' +
+      '&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto&forecast_days=5';
+    weatherData = await (await fetch(url)).json();
+    weatherLoc = loc;
+    renderWeather();
+    status.textContent = loc.label + ' - updated ' + fmtClock(new Date()) + ', auto-refreshes every 30 min. Click a day for the hourly forecast.';
+  } catch (e) {
+    status.textContent = 'Weather unavailable (' + (e.message || e) + '). Enter a US ZIP code above. Note: weather needs the browser to have internet access.';
+  }
+}
+
+function renderWeather() {
+  const w = weatherData;
+  if (!w || !w.current) return;
+  const c = w.current;
+  document.getElementById('weather-now').innerHTML = `
+    <div class="row" style="justify-content:flex-start; gap:14px">
+      ${wxIcon(c.weather_code, c.is_day, 54)}
+      <span style="font-size:1.8rem;font-weight:700">${Math.round(c.temperature_2m)}&deg;F</span>
+      <span class="small">${WMO[c.weather_code] || '-'} &middot; humidity ${c.relative_humidity_2m}% &middot; wind ${Math.round(c.wind_speed_10m)} mph</span>
+    </div>`;
+
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  document.getElementById('weather-forecast').innerHTML = w.daily.time.map((t, i) => {
+    const d = new Date(t + 'T12:00:00');
+    const rain = w.daily.precipitation_probability_max[i];
+    return `<div class="wx-day${i === weatherDayIdx ? ' active' : ''}" onclick="toggleWeatherDay(${i})">
+      <div style="font-weight:700">${i === 0 ? 'Today' : days[d.getDay()]}</div>
+      <div>${wxIcon(w.daily.weather_code[i], 1, 30)}</div>
+      <div>${Math.round(w.daily.temperature_2m_max[i])}&deg; / ${Math.round(w.daily.temperature_2m_min[i])}&deg;</div>
+      <div class="small">rain ${rain == null ? '-' : rain + '%'}</div>
+    </div>`;
+  }).join('');
+
+  const hourlyEl = document.getElementById('weather-hourly');
+  if (weatherDayIdx == null) {
+    hourlyEl.className = '';
+    hourlyEl.innerHTML = '';
+    return;
+  }
+  const date = w.daily.time[weatherDayIdx];
+  const nowHour = new Date().getHours();
+  hourlyEl.className = 'open';
+  hourlyEl.innerHTML = w.hourly.time.map((t, i) => {
+    if (!t.startsWith(date)) return '';
+    const hr = +t.slice(11, 13);
+    if (weatherDayIdx === 0 && hr < nowHour) return '';  // today: skip past hours
+    const label = hr === 0 ? '12AM' : hr < 12 ? hr + 'AM' : hr === 12 ? '12PM' : (hr - 12) + 'PM';
+    const rain = w.hourly.precipitation_probability[i];
+    return `<div class="wx-hour">
+      <div style="font-weight:700">${label}</div>
+      <div>${wxIcon(w.hourly.weather_code[i], hr >= 6 && hr < 20 ? 1 : 0, 22)}</div>
+      <div>${Math.round(w.hourly.temperature_2m[i])}&deg;</div>
+      <div class="small">${rain == null ? '-' : rain + '%'}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleWeatherDay(i) {
+  weatherDayIdx = weatherDayIdx === i ? null : i;
+  renderWeather();
+}
+setInterval(loadWeather, 30 * 60 * 1000);
+
+// ---------- WiFi ----------
+async function loadWifi() {
+  try {
+    const res = await fetch('/api/wifi');
+    const w = await res.json();
+    document.getElementById('wifi-ssid').textContent = w.ssid || '(none)';
+  } catch (e) {}
+}
+
+async function saveWifi() {
+  const ssid = document.getElementById('wifi-new-ssid').value.trim();
+  const password = document.getElementById('wifi-new-pass').value;
+  if (!ssid) { alert('Enter the network name (SSID).'); return; }
+  if (!confirm('Switch WiFi to "' + ssid + '"? The ESP32 will reboot and join it. If the details are wrong, the setup hotspot will open so you can fix them.')) return;
+  await fetch('/api/wifi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ssid, password }),
+  });
+  alert('Saved - rebooting onto the new network. Reconnect to it to find the dashboard.');
+}
+
+// ---------- Config backup / restore ----------
+function downloadConfig() {
+  window.location.href = '/api/config/export';
+}
+
+document.getElementById('config-file').addEventListener('change', async (e) => {
+  const statusEl = document.getElementById('config-status');
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const text = await f.text();
+  try {
+    JSON.parse(text);
+  } catch (err) {
+    statusEl.textContent = 'That file is not valid JSON.';
+    return;
+  }
+  if (!confirm('Replace this device\'s entire configuration with the uploaded file? The ESP32 will reboot.')) return;
+  statusEl.textContent = 'Uploading config...';
+  try {
+    const res = await fetch('/api/config/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: text,
+    });
+    const r = await res.json();
+    statusEl.textContent = r.ok
+      ? 'Config restored - ESP32 is rebooting, the dashboard will reconnect shortly.'
+      : 'That file does not look like a planter config (missing hardware/valves/zones).';
+  } catch (err) {
+    statusEl.textContent = 'Upload failed: ' + err;
+  }
+});
+
+async function saveWateringSettings() {
+  const patch = {
+    supplemental_duration_sec: Math.max(1, +document.getElementById('ws-duration').value || 60),
+    min_supplemental_interval_sec: Math.max(0, +document.getElementById('ws-interval').value || 0) * 60,
+    post_daily_lockout_sec: Math.max(0, +document.getElementById('ws-lockout').value || 0) * 3600,
+    soak_recheck_sec: Math.max(20, +document.getElementById('ws-soak').value || 30),
+    max_water_cycles: Math.min(10, Math.max(1, +document.getElementById('ws-cycles').value || 3)),
+    daily_enabled: document.getElementById('ws-daily').checked,
+    moisture_watering_enabled: document.getElementById('ws-moisture').checked,
+    tz_offset_min: Math.round((+document.getElementById('ws-tz').value || 0) * 60),
+  };
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  await loadWateringSettings();
+  refresh();  // status banner reflects the new auto-watering toggle
+  alert('Settings saved.');
+}
+
+async function setValve(name, action) {
+  await fetch('/api/valve?state=' + action + '&valve=' + encodeURIComponent(name), { method: 'POST' });
+  refresh();
+}
+
+async function quickWater(name) {
+  await fetch('/api/water/trigger?valve=' + encodeURIComponent(name) + '&duration=30', { method: 'POST' });
+  refresh();
+}
+
+async function waterAllValves() {
+  await fetch('/api/water/all?duration=30', { method: 'POST' });
+  refresh();
+}
+
+// ---------- Schedules ----------
+let schedules = [];
+let scheduleValveNames = [];
+
+async function loadSchedules() {
+  const [schedRes, valvesRes] = await Promise.all([
+    fetch('/api/schedules'),
+    fetch('/api/valves'),
+  ]);
+  schedules = await schedRes.json();
+  const valveList = await valvesRes.json();
+  scheduleValveNames = valveList.map(v => v.name);
+  renderSchedules();
+}
+
+function fmtSchedTime(s) {
+  const pm = s.hour >= 12;
+  const h12 = (s.hour % 12) || 12;
+  return h12 + ':' + ('0' + s.minute).slice(-2) + ' ' + (pm ? 'PM' : 'AM');
+}
+
+function renderSchedules() {
+  const div = document.getElementById('schedules');
+  div.innerHTML = '';
+  if (schedules.length === 0) {
+    div.innerHTML = '<div class="small">No schedules. Click "+ Add Time".</div>';
+  }
+  schedules.forEach((s, i) => {
+    if (!s.valve_names) s.valve_names = [];
+    if (!s.zone_names) s.zone_names = [];
+    const card = document.createElement('div');
+    card.className = 'sched-card';
+    const valveChecks = scheduleValveNames.map(name => `
+      <label>
+        <input type="checkbox" ${s.valve_names.includes(name) ? 'checked' : ''}
+          onchange="toggleScheduleValve(${i}, '${name}', this.checked)">
+        ${name}
+      </label>`).join('');
+    const zoneChecks = zonesConfig.length
+      ? zonesConfig.map(z => `
+        <label>
+          <input type="checkbox" ${s.zone_names.includes(z.name) ? 'checked' : ''}
+            onchange="toggleScheduleZone(${i}, '${z.name}', this.checked)">
+          ${z.name}
+        </label>`).join('')
+      : '<span class="small" style="opacity:0.6">no zones set up yet - add one in the Watering Zones card</span>';
+    card.innerHTML = `
+      <div class="sched-fields">
+        <button class="time-chip" onclick="openTimePicker(${i})">${fmtSchedTime(s)}</button>
+        <label class="small">for <input type="number" min="1" value="${s.duration_sec}" onchange="schedules[${i}].duration_sec=+this.value"> sec</label>
+        <label class="small"><input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="schedules[${i}].enabled=this.checked"> On</label>
+        <span style="cursor:pointer;color:var(--red-text);font-weight:700" onclick="removeSchedule(${i})">X</span>
+      </div>
+      <div class="sched-valves">Valves: ${valveChecks || '<span class="small">no valves configured</span>'}</div>
+      <div class="sched-valves">Zones: ${zoneChecks}</div>
+    `;
+    div.appendChild(card);
+  });
+}
+
+function toggleScheduleValve(i, name, checked) {
+  const names = schedules[i].valve_names;
+  if (checked && !names.includes(name)) names.push(name);
+  if (!checked) schedules[i].valve_names = names.filter(n => n !== name);
+}
+
+function toggleScheduleZone(i, name, checked) {
+  const names = schedules[i].zone_names;
+  if (checked && !names.includes(name)) names.push(name);
+  if (!checked) schedules[i].zone_names = names.filter(n => n !== name);
+}
+
+function addSchedule() {
+  schedules.push({ hour: 6, minute: 0, duration_sec: 300, enabled: true, valve_names: scheduleValveNames.slice(0, 1), zone_names: [] });
+  renderSchedules();
+  openTimePicker(schedules.length - 1);
+}
+
+function removeSchedule(i) {
+  schedules.splice(i, 1);
+  renderSchedules();
+}
+
+async function saveSchedules() {
+  const valid = schedules.filter(s =>
+    (s.valve_names && s.valve_names.length) || (s.zone_names && s.zone_names.length));
+  if (valid.length < schedules.length) {
+    alert('Every schedule needs at least one valve or zone checked - schedules with none were not saved.');
+  }
+  await fetch('/api/schedules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(valid),
+  });
+  await loadSchedules();
+  alert('Schedules saved.');
+}
+
+// ---------- Tap-based time picker (like a phone alarm) ----------
+let tpIdx = null;
+let tpState = { h12: 6, m: 0, pm: false };
+
+function openTimePicker(i) {
+  tpIdx = i;
+  const s = schedules[i];
+  tpState = { h12: (s.hour % 12) || 12, m: s.minute, pm: s.hour >= 12 };
+  renderTimePicker();
+  document.getElementById('time-modal').style.display = 'flex';
+}
+
+function closeTimePicker() {
+  document.getElementById('time-modal').style.display = 'none';
+  tpIdx = null;
+}
+
+function tpSetAmPm(pm) { tpState.pm = pm; renderTimePicker(); }
+function tpSetHour(h) { tpState.h12 = h; renderTimePicker(); }
+function tpSetMin(m) { tpState.m = m; renderTimePicker(); }
+
+function renderTimePicker() {
+  document.getElementById('tp-display').textContent =
+    tpState.h12 + ':' + ('0' + tpState.m).slice(-2) + ' ' + (tpState.pm ? 'PM' : 'AM');
+  document.getElementById('tp-am').className = tpState.pm ? '' : 'active';
+  document.getElementById('tp-pm').className = tpState.pm ? 'active' : '';
+  document.getElementById('tp-hours').innerHTML =
+    Array.from({ length: 12 }, (_, k) => k + 1).map(h =>
+      `<button class="${h === tpState.h12 ? 'active' : ''}" onclick="tpSetHour(${h})">${h}</button>`).join('');
+  document.getElementById('tp-mins').innerHTML =
+    Array.from({ length: 12 }, (_, k) => k * 5).map(m =>
+      `<button class="${m === tpState.m ? 'active' : ''}" onclick="tpSetMin(${m})">:${('0' + m).slice(-2)}</button>`).join('');
+}
+
+function tpDone() {
+  if (tpIdx != null && schedules[tpIdx]) {
+    schedules[tpIdx].hour = (tpState.h12 % 12) + (tpState.pm ? 12 : 0);
+    schedules[tpIdx].minute = tpState.m;
+    renderSchedules();
+  }
+  closeTimePicker();
+}
+
+// ---------- Moisture history chart ----------
+// Fixed categorical hue order per zone (validated palette, never cycled)
+const SERIES_COLORS = ['#2a78d6', '#1baf7a', '#eda100', '#008300', '#4a3aa7', '#e34948', '#e87ba4', '#eb6834'];
+let historyData = [];
+
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history');
+    historyData = await res.json();
+    renderHistory();
+  } catch (e) {}
+}
+
+function renderHistory() {
+  const svg = document.getElementById('history-chart');
+  const legend = document.getElementById('history-legend');
+  if (historyData.length < 2) {
+    svg.innerHTML = '<text x="300" y="90" text-anchor="middle" fill="var(--muted)" font-size="13">No history yet - one reading per minute accumulates here.</text>';
+    legend.innerHTML = '';
+    return;
+  }
+  const W = 600, H = 170, L = 34, R = 8, T = 10, B = 22;
+  const t0 = historyData[0].t, t1 = historyData[historyData.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  const px = t => L + (W - L - R) * (t - t0) / span;
+  const py = p => T + (H - T - B) * (1 - p / 100);
+
+  const names = [];
+  historyData.forEach(pt => pt.readings.forEach(r => { if (!names.includes(r.name)) names.push(r.name); }));
+
+  let out = '';
+  [0, 25, 50, 75, 100].forEach(p => {
+    out += `<line x1="${L}" y1="${py(p)}" x2="${W - R}" y2="${py(p)}" stroke="var(--line)" stroke-width="1"/>`;
+    out += `<text x="${L - 5}" y="${py(p) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${p}</text>`;
+  });
+  out += `<text x="${L}" y="${H - 6}" font-size="10" fill="var(--muted)">${fmtClock(new Date(t0 * 1000))}</text>`;
+  out += `<text x="${W - R}" y="${H - 6}" text-anchor="end" font-size="10" fill="var(--muted)">${fmtClock(new Date(t1 * 1000))}</text>`;
+
+  names.forEach((name, i) => {
+    const col = SERIES_COLORS[i % SERIES_COLORS.length];
+    const pts = historyData.map(pt => {
+      const r = pt.readings.find(r => r.name === name);
+      return r ? px(pt.t).toFixed(1) + ',' + py(r.percent).toFixed(1) : null;
+    }).filter(Boolean).join(' ');
+    out += `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  });
+  svg.innerHTML = out;
+
+  legend.innerHTML = names.map((n, i) =>
+    `<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${SERIES_COLORS[i % SERIES_COLORS.length]};margin-right:5px;vertical-align:middle"></span>${n}</span>`
+  ).join('');
+
+  svg.onmousemove = ev => {
+    const rect = svg.getBoundingClientRect();
+    const xv = (ev.clientX - rect.left) * (W / rect.width);
+    const frac = Math.min(1, Math.max(0, (xv - L) / (W - L - R)));
+    const idx = Math.round(frac * (historyData.length - 1));
+    const pt = historyData[idx];
+    if (!pt) return;
+    const tip = document.getElementById('history-tip');
+    tip.style.display = 'block';
+    tip.style.left = Math.min(rect.width - 150, Math.max(0, ev.clientX - rect.left + 12)) + 'px';
+    tip.style.top = '6px';
+    tip.innerHTML = '<b>' + fmtClock(new Date(pt.t * 1000)) + '</b><br>' +
+      pt.readings.map(r => r.name + ': ' + r.percent + '%').join('<br>');
+  };
+  svg.onmouseleave = () => { document.getElementById('history-tip').style.display = 'none'; };
+}
+
+async function loadEvents() {
+  const res = await fetch('/api/events');
+  const events = await res.json();
+  const div = document.getElementById('events');
+  div.innerHTML = events.slice().reverse().map(e =>
+    `<div>${new Date(e.t*1000).toLocaleTimeString()} - ${e.kind} ${e.detail || ''}</div>`
+  ).join('');
+}
+
+// ---------- Unified GPIO pin map ----------
+let valveConfig = [];   // working copy: [{name, pin, active_high, flow_meter_pin}]
+let hwState = null;     // working copy of hardware config (i2c pins, ads address, zone_channels, zone_valves, flow_meter_pins)
+let pinMapData = null;  // last /api/pinmap response (pins[], ads_channels[])
+let selectedPin = null;
+
+function adsAddrs() {
+  return (hwState && hwState.ads1115_addresses) || [0x48];
+}
+
+function channelLabel(ch) {
+  const b = Math.floor(ch / 4);
+  return (adsAddrs().length > 1 ? 'ADS' + (b + 1) + ' ' : '') + 'A' + (ch % 4);
+}
+
+async function loadPinMap() {
+  const [pinRes, valveRes] = await Promise.all([
+    fetch('/api/pinmap'),
+    fetch('/api/valves'),
+  ]);
+  pinMapData = await pinRes.json();
+  valveConfig = await valveRes.json();
+  hwState = pinMapData.hardware;
+  if (!hwState.flow_meter_pins) hwState.flow_meter_pins = [];
+  renderPinMap();
+}
+
+// ---------- Watering zones editor ----------
+let zonesConfig = [];  // working copy: [{name, channel, valves, threshold}]
+
+async function loadZones() {
+  const res = await fetch('/api/zones');
+  zonesConfig = await res.json();
+  renderZones();
+}
+
+function zoneChainHtml(z) {
+  const zoneLabel = `<span class="chain-pill zone">${channelLabel(z.channel)}: ${z.name || '(unnamed)'}</span>`;
+  if (!z.valves || z.valves.length === 0) {
+    return `${zoneLabel} <span class="chain-arrow">&rarr;</span>
+      <span class="chain-empty">no valve - won't water automatically</span>`;
+  }
+  const pills = z.valves.map((vn, i) => {
+    const v = valveConfig.find(v => v.name === vn);
+    const hasFlow = v && v.flow_meter_pin !== null && v.flow_meter_pin !== undefined;
+    const mode = v && v.watering_mode === 'volume' && hasFlow
+      ? ` <span class="chain-pill flow">by volume${v.target_volume_l ? ' (' + (v.target_volume_l * 0.264172).toFixed(1) + ' gal)' : ''}</span>`
+      : '';
+    const seq = z.valves.length > 1 ? `<span class="small">${i + 1}.</span> ` : '';
+    return `${seq}<span class="chain-pill valve">${vn}</span>${mode}`;
+  }).join(' <span class="chain-arrow">then</span> ');
+  return `${zoneLabel} <span class="chain-arrow">&rarr;</span> ${pills}
+    <span class="small">(${z.water_duration_sec || 60}s each)</span>`;
+}
+
+function renderZones() {
+  const div = document.getElementById('zones-editor');
+  div.innerHTML = '';
+  if (zonesConfig.length === 0) {
+    div.innerHTML = '<div class="small">No zones yet. Click "+ Add Zone" to hook a sensor channel up to a spot in your planter.</div>';
+    return;
+  }
+  const addrs = adsAddrs();
+  zonesConfig.forEach((z, i) => {
+    const card = document.createElement('div');
+    card.className = 'sched-card';
+    const channelOpts = Array.from({ length: addrs.length * 4 }, (_, ch) => {
+      const b = Math.floor(ch / 4);
+      const label = (addrs.length > 1 ? 'ADS' + (b + 1) + ' (0x' + addrs[b].toString(16) + ') ' : '') + 'A' + (ch % 4);
+      return `<option value="${ch}" ${ch === z.channel ? 'selected' : ''}>${label}</option>`;
+    }).join('');
+    const valveChecks = valveConfig.map(v => `
+      <label>
+        <input type="checkbox" ${z.valves.includes(v.name) ? 'checked' : ''}
+          onchange="toggleZoneValve(${i}, '${v.name}', this.checked)">
+        ${v.name}
+      </label>`).join('');
+    card.innerHTML = `
+      <div class="sched-fields">
+        <label class="small">Zone name <input type="text" value="${z.name}" onchange="zonesConfig[${i}].name = this.value.trim(); updateZoneChain(${i})"></label>
+        <label class="small">Sensor <select onchange="zonesConfig[${i}].channel = +this.value; updateZoneChain(${i})">${channelOpts}</select></label>
+        <label class="small">Dry below <input type="number" min="0" max="100" value="${z.threshold}" onchange="zonesConfig[${i}].threshold = +this.value"> %</label>
+        <label class="small">Water until <input type="number" min="0" max="100" value="${z.wet_target}" onchange="zonesConfig[${i}].wet_target = +this.value"> %</label>
+        <label class="small">Water for <input type="number" min="1" value="${z.water_duration_sec}" onchange="zonesConfig[${i}].water_duration_sec = +this.value; updateZoneChain(${i})"> sec</label>
+        <span style="cursor:pointer;color:var(--red-text);font-weight:700" onclick="removeZone(${i})">X</span>
+      </div>
+      <div class="sched-valves">Opens: ${valveChecks || '<span class="small">no valves configured - add one in the GPIO Pin Map</span>'}</div>
+      <div class="chain-row" id="zone-chain-${i}">${zoneChainHtml(z)}</div>
+    `;
+    div.appendChild(card);
+  });
+}
+
+function updateZoneChain(i) {
+  const el = document.getElementById('zone-chain-' + i);
+  if (el) el.innerHTML = zoneChainHtml(zonesConfig[i]);
+}
+
+function toggleZoneValve(i, valveName, checked) {
+  const z = zonesConfig[i];
+  if (checked && !z.valves.includes(valveName)) z.valves.push(valveName);
+  if (!checked) z.valves = z.valves.filter(n => n !== valveName);
+  updateZoneChain(i);
+}
+
+function addZone() {
+  const total = adsAddrs().length * 4;
+  const usedChannels = zonesConfig.map(z => z.channel);
+  let free;
+  for (let ch = 0; ch < total; ch++) {
+    if (!usedChannels.includes(ch)) { free = ch; break; }
+  }
+  if (free === undefined) {
+    alert('All ' + total + ' sensor channels are assigned to zones. Add another ADS1115 board (click an I2C pin in the GPIO Pin Map) for 4 more.');
+    return;
+  }
+  zonesConfig.push({
+    name: 'zone' + (zonesConfig.length + 1),
+    channel: free,
+    valves: valveConfig.length ? [valveConfig[0].name] : [],
+    threshold: 30,
+    wet_target: 40,
+    water_duration_sec: 60,
+  });
+  renderZones();
+}
+
+function removeZone(i) {
+  zonesConfig.splice(i, 1);
+  renderZones();
+}
+
+async function saveZones() {
+  const names = zonesConfig.map(z => z.name);
+  if (names.some(n => !n)) { alert('Every zone needs a name.'); return; }
+  if (new Set(names).size !== names.length) { alert('Zone names must be unique.'); return; }
+  const channels = zonesConfig.map(z => z.channel);
+  if (new Set(channels).size !== channels.length) { alert('Each sensor channel can only belong to one zone.'); return; }
+  const badTarget = zonesConfig.find(z => z.wet_target < z.threshold);
+  if (badTarget) { alert('"Water until" must be at or above "Dry below" for zone "' + badTarget.name + '" - otherwise the re-check could never finish.'); return; }
+  await fetch('/api/zones', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ zones: zonesConfig }),
+  });
+  await loadZones();
+  refresh();
+  alert('Zones saved.');
+}
+
+function roleForPin(gpio) {
+  const n = adsAddrs().length;
+  const busLabel = ' - ADS1115 bus (' + n + (n > 1 ? ' boards)' : ' board)');
+  if (gpio === hwState.i2c_scl_pin) return { kind: 'i2c', label: 'I2C SCL' + busLabel };
+  if (gpio === hwState.i2c_sda_pin) return { kind: 'i2c', label: 'I2C SDA' + busLabel };
+  const valve = valveConfig.find(v => v.pin === gpio);
+  if (valve) return { kind: 'valve', label: 'Solenoid valve: ' + valve.name, valve };
+  const flowValve = valveConfig.find(v => v.flow_meter_pin === gpio);
+  if (flowValve) return { kind: 'flow_meter', label: 'Flow meter: ' + flowValve.name, valve: flowValve };
+  if ((hwState.flow_meter_pins || []).includes(gpio)) return { kind: 'flow_meter_standalone', label: 'Flow meter' };
+  if (gpio === hwState.rain_sensor_pin) return { kind: 'rain', label: 'Rain sensor (LM393)' };
+  return null;
+}
+
+function renderPinMap() {
+  const tbody = document.getElementById('pin-table');
+  tbody.innerHTML = '';
+  pinMapData.pins.forEach(p => {
+    const role = roleForPin(p.gpio);
+    const blocked = p.flash || p.serial || p.not_broken_out;
+    const tr = document.createElement('tr');
+    let cls = '';
+    if (role) cls = 'assigned';
+    else if (p.not_broken_out) cls = 'notbroken';
+    else if (p.flash || p.serial) cls = 'unsafe';
+    else if (p.strapping) cls = 'strapping';
+    else if (p.input_only) cls = 'inputonly';
+    tr.className = cls;
+
+    let statusText = 'free';
+    if (p.not_broken_out) statusText = 'not on this board';
+    else if (p.flash) statusText = 'SPI flash - do not use';
+    else if (p.serial) statusText = 'USB serial (TX0/RX0)';
+    else if (p.strapping) statusText = 'boot strapping - use with care';
+    else if (p.input_only) statusText = 'input-only';
+
+    tr.innerHTML = `
+      <td class="gpio-num">${p.gpio}</td>
+      <td class="status">${statusText}</td>
+      <td>${role ? `<span class="role-pill">${role.label}</span>` : '-'}</td>`;
+    if (!blocked) {
+      tr.onclick = () => selectPin(p.gpio);
+    }
+    tbody.appendChild(tr);
+  });
+  if (selectedPin !== null) selectPin(selectedPin);
+}
+
+function selectPin(gpio) {
+  selectedPin = gpio;
+  const p = pinMapData.pins.find(pin => pin.gpio === gpio);
+  const role = roleForPin(gpio);
+  const detail = document.getElementById('pin-detail');
+  detail.style.display = 'block';
+
+  if (role) {
+    let body = '';
+    if (role.kind === 'i2c') {
+      const addrs = adsAddrs();
+      const VALID_ADS = [0x48, 0x49, 0x4a, 0x4b];
+      const STRAP = { 0x48: 'ADDR pin to GND (factory default)', 0x49: 'ADDR pin to VDD', 0x4a: 'ADDR pin to SDA', 0x4b: 'ADDR pin to SCL' };
+      const boardRows = addrs.map((a, i) => {
+        const bad = VALID_ADS.includes(a) ? '' : ' <span style="color:var(--red-text)">not a real ADS1115 address (only 0x48-0x4b exist) - remove it</span>';
+        return `
+        <div class="row" style="margin-top:6px">
+          <span class="small"><b>ADS${i + 1}</b> - 0x${a.toString(16)}${STRAP[a] ? ' (' + STRAP[a] + ')' : ''}${bad}</span>
+          ${addrs.length > 1 ? `<span class="clear-btn" onclick="removeAdsBoard(${i})">X remove</span>` : ''}
+        </div>`;
+      }).join('');
+      const freeAddrs = VALID_ADS.filter(a => !addrs.includes(a));
+      const addOpts = freeAddrs.map(a => `<option value="${a}">0x${a.toString(16)} - ${STRAP[a]}</option>`).join('');
+      body = `<p class="small"><b>Every ADS1115 board wires to the ESP32 the same way:</b> SCL to GPIO ${hwState.i2c_scl_pin}, SDA to GPIO ${hwState.i2c_sda_pin}, VDD to the ESP32's 3V3 pin (VDD just means "power in" - it is not a GPIO), and GND to GND. A second board does NOT need new GPIOs - its four wires join the same four.</p>
+        <p class="small"><b>The ADDR pin never connects to the ESP32.</b> Give it a short jumper to one of the four wires already at the board - that choice sets the board's address, fixed by the chip's design: ADDR to GND = 0x48 (how boards ship), ADDR to VDD = 0x49, ADDR to SDA = 0x4a, ADDR to SCL = 0x4b. So board 2 = jumper its ADDR to its own VDD pin, then add it here as 0x49. Click Scan Bus to see what's really answering. Up to 4 boards = 16 sensor channels.</p>
+        <p class="small">Which ESP32 pins host I2C is flexible: the ESP32 routes I2C internally, so almost any free output-capable GPIO works - GPIO 22 (SCL) / 21 (SDA) are just the usual defaults. Input-only pins (34/35/36/39) cannot host I2C.</p>
+        <p class="small">Each moisture sensor's AOUT wire goes to one A0-A3 input on one board - pick which zone reads which input in the Watering Zones card.</p>
+        <p class="small">An AHT20+BMP280 temp/humidity/pressure board can share this same bus (its addresses 0x38 and 0x76/0x77 never clash with the ADS1115s) - it's detected automatically at boot, no setup needed.</p>
+        ${boardRows}
+        <div class="fields">
+          ${freeAddrs.length ? `<label>Add board <select id="pd-ads-new">${addOpts}</select></label>` : '<span class="small">All 4 possible board addresses are configured.</span>'}
+        </div>
+        <div class="actions">
+          ${freeAddrs.length ? `<button onclick="addAdsBoard(${gpio})">Add Board</button>` : ''}
+          <button onclick="scanI2c()">Scan Bus</button>
+          <button onclick="saveHardwareNow()">Save &amp; Reboot</button>
+        </div>
+        <div id="pd-scan-result" class="small" style="margin-top:8px"></div>`;
+    } else if (role.kind === 'valve') {
+      const hasFlowMeter = role.valve.flow_meter_pin !== null && role.valve.flow_meter_pin !== undefined;
+      body = `
+        <div class="fields">
+          <label>Name <input id="pd-name" type="text" value="${role.valve.name}"></label>
+          <label>Active-high <input id="pd-active-high" type="checkbox" ${role.valve.active_high ? 'checked' : ''}></label>
+          <label>Watering mode <select id="pd-watering-mode" ${hasFlowMeter ? '' : 'disabled'}>
+            <option value="duration" ${role.valve.watering_mode !== 'volume' ? 'selected' : ''}>by duration</option>
+            <option value="volume" ${role.valve.watering_mode === 'volume' ? 'selected' : ''}>by volume (needs flow meter)</option>
+          </select></label>
+          <label>Target volume (gal) <input id="pd-target-volume" type="number" step="0.1" min="0"
+            value="${role.valve.target_volume_l == null ? '' : (role.valve.target_volume_l * 0.264172).toFixed(2)}" ${hasFlowMeter ? '' : 'disabled'}></label>
+        </div>
+        ${hasFlowMeter ? '' : '<p class="small">Volume-based watering needs a flow meter attached to this valve (assign one from a free pin). Pulse counting isn\'t implemented yet, so volume mode has no effect until then.</p>'}
+        <div class="actions">
+          <button onclick="saveValveField(${gpio})">Save</button>
+          <button class="stop" onclick="removeValveAt(${gpio})">Remove valve</button>
+        </div>`;
+    } else if (role.kind === 'rain') {
+      body = `<p class="small">LM393 rain sensor. Wire the module's DO pin here, VCC to 3V3, GND to GND - the plate reads WET when its output goes LOW (sensitivity is the potentiometer on the module). Shown live in the Environment card.</p>
+        <div class="actions"><button class="stop" onclick="removeRainSensor()">Remove</button></div>`;
+    } else if (role.kind === 'flow_meter' || role.kind === 'flow_meter_standalone') {
+      const current = role.kind === 'flow_meter' ? role.valve.name : '';
+      const opts = [`<option value="" ${current === '' ? 'selected' : ''}>standalone (not tied to a valve)</option>`]
+        .concat(valveConfig.map(v =>
+          `<option value="${v.name}" ${v.name === current ? 'selected' : ''}>${v.name}</option>`)).join('');
+      body = `<p class="small">${current ? 'Flow meter on valve "' + current + '"\'s water line.' : 'Standalone flow meter (e.g. on the main supply line).'}</p>
+        <div class="fields">
+          <label>Attached to <select id="pd-fm-reassign">${opts}</select></label>
+        </div>
+        <div class="actions">
+          <button onclick="reassignFlowMeter(${gpio})">Save</button>
+          <button class="stop" onclick="${current ? 'detachFlowMeter' : 'clearStandaloneFlowMeter'}(${gpio})">Remove</button>
+        </div>`;
+    }
+    detail.innerHTML = `<div class="row"><strong>GPIO ${gpio} - ${role.label}</strong><span class="clear-btn" onclick="closePinDetail()">X close</span></div>${body}`;
+    return;
+  }
+
+  if (p.flash || p.serial || p.not_broken_out) {
+    closePinDetail();
+    return;
+  }
+
+  const strapNote = p.strapping
+    ? `<p class="small"><b>Careful:</b> GPIO ${gpio} is a boot-strapping pin - the ESP32 reads it at power-on to decide how to boot. It works as a normal output afterward, but external circuitry must not pull it ${gpio === 12 ? 'HIGH at reset (GPIO12 held high stops the board booting)' : 'the wrong way at reset'}. A MOSFET gate input is usually fine; test a reboot after wiring.</p>`
+    : '';
+  detail.innerHTML = `
+    <div class="row"><strong>GPIO ${gpio} - free</strong><span class="clear-btn" onclick="closePinDetail()">X close</span></div>
+    ${strapNote}
+    <p class="small">Assign this pin as:${p.input_only ? ' <span class="small">(input-only pin - it can read a flow meter, but cannot drive a valve or the I2C bus)</span>' : ''}</p>
+    <div class="role-picker">
+      ${p.input_only ? '' : `<button onclick="startAssignValve(${gpio})">Solenoid valve</button>`}
+      <button onclick="startAssignFlowMeter(${gpio})">Flow meter</button>
+      <button onclick="assignRainSensor(${gpio})">Rain sensor</button>
+      ${p.input_only ? '' : `<button onclick="startAssignI2c(${gpio})">I2C (ADS1115)</button>`}
+    </div>
+    <div id="pd-sub"></div>
+  `;
+}
+
+function closePinDetail() {
+  selectedPin = null;
+  document.getElementById('pin-detail').style.display = 'none';
+}
+
+function startAssignValve(gpio) {
+  document.getElementById('pd-sub').innerHTML = `
+    <div class="fields" style="margin-top:10px">
+      <label>Valve name <input id="pd-new-name" type="text" placeholder="e.g. valve2"></label>
+      <label>Active-high <input id="pd-new-active-high" type="checkbox" checked></label>
+    </div>
+    <div class="actions"><button onclick="confirmAssignValve(${gpio})">Add valve</button></div>`;
+}
+
+function confirmAssignValve(gpio) {
+  const name = document.getElementById('pd-new-name').value.trim();
+  if (!name) { alert('Enter a name for the valve.'); return; }
+  if (valveConfig.some(v => v.name === name)) { alert('A valve with that name already exists.'); return; }
+  const activeHigh = document.getElementById('pd-new-active-high').checked;
+  valveConfig.push({ name, pin: gpio, active_high: activeHigh, flow_meter_pin: null, watering_mode: 'duration', target_volume_l: null });
+  saveValvesNow();
+}
+
+function startAssignFlowMeter(gpio) {
+  const options = valveConfig.map(v => `<option value="${v.name}">${v.name}</option>`).join('');
+  document.getElementById('pd-sub').innerHTML = `
+    <div class="fields" style="margin-top:10px">
+      <label>Attach to valve <select id="pd-fm-valve">
+        <option value="">standalone (not tied to a valve)</option>
+        ${options}
+      </select></label>
+    </div>
+    <div class="actions"><button onclick="confirmAssignFlowMeter(${gpio})">Assign</button></div>`;
+}
+
+function confirmAssignFlowMeter(gpio) {
+  const valveName = document.getElementById('pd-fm-valve').value;
+  if (valveName) {
+    const v = valveConfig.find(v => v.name === valveName);
+    v.flow_meter_pin = gpio;
+    saveValvesNow();
+  } else {
+    hwState.flow_meter_pins = hwState.flow_meter_pins || [];
+    if (!hwState.flow_meter_pins.includes(gpio)) hwState.flow_meter_pins.push(gpio);
+    saveHardwareNow();
+  }
+}
+
+function startAssignI2c(gpio) {
+  document.getElementById('pd-sub').innerHTML = `
+    <p class="small" style="margin-top:10px"><b>Note:</b> this MOVES the shared I2C bus here - every ADS1115 board follows it. Adding a second board does not need new pins: click the existing I2C pin and use "Add Board" instead.</p>
+    <div class="fields">
+      <label>Role <select id="pd-i2c-role">
+        <option value="scl">I2C SCL</option>
+        <option value="sda">I2C SDA</option>
+      </select></label>
+    </div>
+    <div class="actions"><button onclick="confirmAssignI2c(${gpio})">Assign</button></div>`;
+}
+
+function confirmAssignI2c(gpio) {
+  const role = document.getElementById('pd-i2c-role').value;
+  if (role === 'scl') hwState.i2c_scl_pin = gpio;
+  else hwState.i2c_sda_pin = gpio;
+  saveHardwareNow();
+}
+
+function saveValveField(gpio) {
+  const valve = valveConfig.find(v => v.pin === gpio);
+  const origName = valve.name;
+  const newName = document.getElementById('pd-name').value.trim() || origName;
+  if (newName !== origName && valveConfig.some(v => v !== valve && v.name === newName)) {
+    alert('A valve with that name already exists.');
+    return;
+  }
+  valve.name = newName;
+  valve.active_high = document.getElementById('pd-active-high').checked;
+  const modeEl = document.getElementById('pd-watering-mode');
+  const volumeEl = document.getElementById('pd-target-volume');
+  if (!modeEl.disabled) {
+    valve.watering_mode = modeEl.value;
+    // input is gallons; stored as liters
+    valve.target_volume_l = volumeEl.value === '' ? null : +volumeEl.value / 0.264172;
+  }
+  // Renames travel with the save so zones and schedules pointing at the
+  // old name are updated server-side rather than silently unassigned.
+  saveValvesNow(newName !== origName ? { [origName]: newName } : null);
+}
+
+function addAdsBoard(gpio) {
+  const el = document.getElementById('pd-ads-new');
+  if (!el) return;
+  hwState.ads1115_addresses = [...adsAddrs(), +el.value];
+  selectPin(gpio);  // re-render the board list; Save & Reboot applies it
+}
+
+async function scanI2c() {
+  const el = document.getElementById('pd-scan-result');
+  el.textContent = 'Scanning the I2C bus...';
+  try {
+    const res = await fetch('/api/i2c/scan');
+    const data = await res.json();
+    const found = data.found || [];
+    if (!found.length) {
+      el.textContent = 'No devices answered on the bus. Check wiring: SDA/SCL swapped, no 3V3 power, or loose ground are the usual causes.';
+      return;
+    }
+    const configured = adsAddrs();
+    el.innerHTML = 'Answering on the bus: ' + found.map(a => {
+      const hex = '0x' + a.toString(16);
+      return configured.includes(a)
+        ? hex + ' (configured)'
+        : '<b>' + hex + ' - not configured, add it above</b>';
+    }).join(', ');
+    const missing = configured.filter(a => !found.includes(a));
+    if (missing.length) {
+      el.innerHTML += '<br>Configured but NOT answering: ' +
+        missing.map(a => '0x' + a.toString(16)).join(', ') + ' - check that board\'s wiring/ADDR strap.';
+    }
+  } catch (e) {
+    el.textContent = 'Scan failed: ' + e;
+  }
+}
+
+function reassignFlowMeter(gpio) {
+  const target = document.getElementById('pd-fm-reassign').value;
+  // detach this pin from wherever it currently lives, then re-attach
+  valveConfig.forEach(v => { if (v.flow_meter_pin === gpio) v.flow_meter_pin = null; });
+  hwState.flow_meter_pins = (hwState.flow_meter_pins || []).filter(p => p !== gpio);
+  if (target) {
+    valveConfig.find(v => v.name === target).flow_meter_pin = gpio;
+  } else {
+    hwState.flow_meter_pins.push(gpio);
+  }
+  // one atomic save: /api/valves also carries the standalone pin list
+  saveValvesNow();
+}
+
+function removeAdsBoard(i) {
+  if (!confirm('Remove this board? Zones reading its channels (and any later board\'s channels) will need re-mapping in the Watering Zones card.')) return;
+  hwState.ads1115_addresses = adsAddrs().filter((_, idx) => idx !== i);
+  selectPin(selectedPin);
+}
+
+function removeValveAt(gpio) {
+  if (valveConfig.length <= 1) {
+    alert('At least one valve is required.');
+    return;
+  }
+  valveConfig = valveConfig.filter(v => v.pin !== gpio);
+  closePinDetail();
+  saveValvesNow(null, 'Remove this valve? Zones and schedules pointing at it will lose it, and the ESP32 will reboot to apply.');
+}
+
+function detachFlowMeter(gpio) {
+  const valve = valveConfig.find(v => v.flow_meter_pin === gpio);
+  if (valve) valve.flow_meter_pin = null;
+  saveValvesNow();
+}
+
+function clearStandaloneFlowMeter(gpio) {
+  hwState.flow_meter_pins = (hwState.flow_meter_pins || []).filter(p => p !== gpio);
+  saveHardwareNow();
+}
+
+function assignRainSensor(gpio) {
+  if (hwState.rain_sensor_pin != null && hwState.rain_sensor_pin !== gpio) {
+    if (!confirm('The rain sensor is currently on GPIO ' + hwState.rain_sensor_pin + ' - move it to GPIO ' + gpio + '?')) return;
+  }
+  hwState.rain_sensor_pin = gpio;
+  saveHardwareNow();
+}
+
+function removeRainSensor() {
+  hwState.rain_sensor_pin = null;
+  saveHardwareNow();
+}
+
+async function saveValvesNow(renames, message) {
+  if (!confirm(message || 'This will reboot the ESP32 to apply the valve change. Continue?')) {
+    // local working copies were already edited - reload from the device
+    // so the UI doesn't show a state the hardware doesn't have
+    await loadPinMap();
+    return;
+  }
+  await fetch('/api/valves', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      valves: valveConfig,
+      renames: renames || {},
+      flow_meter_pins: (hwState && hwState.flow_meter_pins) || [],
+    }),
+  });
+  alert('Saved. ESP32 is rebooting - dashboard will reconnect once it comes back up.');
+}
+
+async function saveHardwareNow() {
+  if (!confirm('This will reboot the ESP32 to apply the pin change. Continue?')) {
+    await loadPinMap();
+    return;
+  }
+  await fetch('/api/hardware', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hardware: hwState }),
+  });
+  alert('Saved. ESP32 is rebooting - dashboard will reconnect once it comes back up.');
+}
+
+async function uploadFiles(fileList) {
+  if (!fileList || fileList.length === 0) return;
+  const statusDiv = document.getElementById('upload-status');
+  statusDiv.textContent = 'Uploading ' + fileList.length + ' file(s)...';
+  const formData = new FormData();
+  for (const f of fileList) formData.append('files', f, f.name);
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const result = await res.json();
+    statusDiv.textContent = 'Saved: ' + result.saved.join(', ') +
+      (result.rejected.length ? ' | Rejected: ' + result.rejected.join(', ') : '') +
+      '. Click "Reboot Now" to apply.';
+  } catch (e) {
+    statusDiv.textContent = 'Upload failed: ' + e;
+  }
+}
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => uploadFiles(e.target.files));
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.style.background = 'var(--blue-soft)'; });
+dropzone.addEventListener('dragleave', () => { dropzone.style.background = ''; });
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.style.background = '';
+  uploadFiles(e.dataTransfer.files);
+});
+
+async function rebootDevice() {
+  if (!confirm('Reboot the ESP32 now?')) return;
+  await fetch('/api/reboot', { method: 'POST' });
+  alert('Rebooting - dashboard will reconnect once it comes back up.');
+}
+
+// ---- Firmware / OTA updates ----
+// Rendered from status.update on every /api/status poll (see renderOta),
+// so the card stays live without its own timer.
+function renderOta(u, nowTs) {
+  if (!u) return;
+  const ver = document.getElementById('ota-version');
+  const badge = document.getElementById('ota-badge');
+  const applyBtn = document.getElementById('ota-apply-btn');
+  const checkBtn = document.getElementById('ota-check-btn');
+  const status = document.getElementById('ota-status');
+
+  ver.textContent = 'version ' + (u.version || 'unknown');
+  document.getElementById('ota-checked').textContent = fmtAgo(nowTs, u.last_check);
+  document.getElementById('ota-updated').textContent = fmtAgo(nowTs, u.last_install);
+
+  if (u.available) {
+    badge.style.display = '';
+    badge.textContent = 'update available: ' + u.available;
+    badge.style.color = '#b26a00';
+    applyBtn.style.display = '';
+  } else {
+    badge.style.display = 'none';
+    applyBtn.style.display = 'none';
+  }
+
+  // While the device is downloading, disable both buttons - a second
+  // request mid-update would fight for the same TLS memory.
+  checkBtn.disabled = !!u.busy;
+  applyBtn.disabled = !!u.busy;
+  if (u.busy) {
+    status.textContent = 'Working...';
+  } else if (u.error) {
+    status.textContent = 'Last attempt: ' + u.error;
+  }
+}
+
+async function otaCheck() {
+  const status = document.getElementById('ota-status');
+  const btn = document.getElementById('ota-check-btn');
+  btn.disabled = true;
+  status.textContent = 'Contacting the repo...';
+  try {
+    const r = await fetch('/api/update/check', { method: 'POST' });
+    const j = await r.json();
+    if (!j.ok) {
+      status.textContent = 'Check failed: ' + (j.error || 'unknown error');
+    } else if (j.changed && j.changed.length) {
+      status.textContent = 'Update available (' + j.changed.length +
+        ' file(s) changed): ' + j.changed.join(', ');
+      document.getElementById('ota-apply-btn').style.display = '';
+    } else {
+      status.textContent = 'Up to date.';
+    }
+  } catch (e) {
+    status.textContent = 'Check failed: ' + e;
+  }
+  btn.disabled = false;
+  refresh();
+}
+
+async function otaApply() {
+  if (!confirm('Download and install the update? The planter will reboot when it finishes. Watering is paused during the update.')) return;
+  const status = document.getElementById('ota-status');
+  document.getElementById('ota-apply-btn').disabled = true;
+  document.getElementById('ota-check-btn').disabled = true;
+  status.textContent = 'Downloading and verifying - do not power off. The planter reboots when done.';
+  try {
+    await fetch('/api/update/apply', { method: 'POST' });
+  } catch (e) {
+    // the reboot kills the connection mid-request; that's expected
+  }
+  status.textContent = 'Update applied - waiting for the planter to come back...';
+  // poll until the device answers again, then reload to pick up any new UI
+  let tries = 0;
+  const probe = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (r.ok) { clearInterval(probe); location.reload(); }
+    } catch (e) { /* still rebooting */ }
+    if (tries > 40) {
+      clearInterval(probe);
+      status.textContent = 'Planter has not come back yet. If it stays down for a few minutes, check the console - it rolls back automatically after 3 failed boots.';
+    }
+  }, 3000);
+}
+
+async function initDashboard() {
+  // loadPinMap first: it populates valveConfig and hwState (board
+  // addresses), which the zones editor and control cards render from.
+  // Settings load before the first refresh so the status banner knows
+  // whether auto-watering is enabled.
+  await loadPinMap();
+  await loadZones();
+  await loadWateringSettings();
+  refresh();
+  loadEvents();
+  loadSchedules();
+  loadHistory();
+  loadWifi();
+}
+let savedTheme = null;
+try { savedTheme = localStorage.getItem('planter-theme'); } catch (e) {}
+applyTheme(savedTheme === 'dark');
+updateClock();
+setInterval(updateClock, 10000);
+
+initDashboard();
+setInterval(refresh, 5000);
+setInterval(loadEvents, 15000);
+setInterval(loadHistory, 60000);
+</script>
+</body>
+</html>

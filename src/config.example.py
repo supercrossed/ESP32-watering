@@ -1,6 +1,6 @@
 # config.example.py
 # Copy this file to config.py and edit it for your build:
-#     cp config.example.py config.py
+#     cp src/config.example.py src/config.py
 # config.py is gitignored so your WiFi password never reaches the repo.
 #
 # You can also leave the WiFi fields as-is: on first boot the device opens a
@@ -56,6 +56,10 @@ UPDATE_CHECK_HOUR = 4
 # dashboard and wait for you to press "Update now"? False is the safer
 # default for something that controls water valves.
 UPDATE_AUTO_INSTALL = False
+# Where the manifest lives within the repo. Build artifacts are published
+# from build/, so that's the default. Each manifest entry also carries its
+# own path, so the repo can be reorganized without reflashing devices.
+UPDATE_MANIFEST_PATH = "build/manifest.json"
 # Optional override: point at a plain-HTTP mirror if TLS is unreliable on
 # your board (a TLS handshake needs ~30-45KB of contiguous C heap).
 # UPDATE_BASE_URL = "http://192.168.1.50/planter/"

@@ -30,7 +30,7 @@ Open the printed IP in a browser, or try <http://planter.local>.
 
 ## WiFi
 
-**Configured in `config.py`:** the planter joins on boot and prints its IP.
+**Configured in `src/config.py`:** the planter joins on boot and prints its IP.
 
 **Not configured, or wrong password:** it opens a captive setup portal.
 

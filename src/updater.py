@@ -47,7 +47,11 @@ except ImportError:
 # (e.g. a plain-HTTP mirror if TLS is tight on your board).
 DEFAULT_BASE_URL = "https://raw.githubusercontent.com/{repo}/{branch}/"
 
-MANIFEST_NAME = "manifest.json"
+# Path to the manifest WITHIN the repo. Artifacts live in build/, so that's
+# where the manifest sits too. Override with config.UPDATE_MANIFEST_PATH if
+# you restructure the repo; each manifest entry additionally carries its own
+# "path", so individual files can move without touching this.
+DEFAULT_MANIFEST_PATH = "build/manifest.json"
 VERSION_FILE = "version.json"      # what's installed right now
 _CHUNK = 512
 
@@ -62,6 +66,10 @@ _NEVER_UPDATE = ("config.py", "wifi.json", "settings.json", "version.json")
 
 def _cfg(config, name, default):
     return getattr(config, name, default)
+
+
+def manifest_path(config):
+    return _cfg(config, "UPDATE_MANIFEST_PATH", DEFAULT_MANIFEST_PATH)
 
 
 def base_url(config):
@@ -300,7 +308,7 @@ def check(config):
         result["error"] = "no UPDATE_REPO configured"
         return result
     try:
-        raw = _fetch_small(url + MANIFEST_NAME)
+        raw = _fetch_small(url + manifest_path(config))
         manifest = json.loads(raw)
     except Exception as e:
         result["error"] = "manifest fetch failed: {}".format(e)
@@ -323,11 +331,31 @@ def check(config):
 
 
 def _updatable(name):
+    """Is this a file we're willing to write? `name` is the DEVICE filename
+    (the device filesystem is flat) - never a path."""
     if name in _NEVER_UPDATE:
         return False
     if "/" in name or "\\" in name or name.startswith("."):
         return False  # no directories, no traversal
     return any(name.endswith(e) for e in _ALLOWED_EXT)
+
+
+def _fetch_path(name, meta):
+    """Where to fetch `name` from, relative to the repo root.
+
+    The manifest may carry an explicit "path" (e.g. "build/web.mpy") so the
+    repo can be reorganized without changing device code. Older manifests
+    have no path - fall back to the bare filename, which is what the
+    original flat-repo layout used."""
+    if isinstance(meta, dict):
+        p = meta.get("path")
+        if p:
+            # Refuse anything that could escape the repo or hit an absolute
+            # URL - the manifest is remote input, treat it as untrusted.
+            if ".." in p or p.startswith("/") or "://" in p:
+                return None
+            return p
+    return name
 
 
 def apply(config, on_progress=None):
@@ -340,7 +368,7 @@ def apply(config, on_progress=None):
         return result
 
     try:
-        manifest = json.loads(_fetch_small(url + MANIFEST_NAME))
+        manifest = json.loads(_fetch_small(url + manifest_path(config)))
     except Exception as e:
         result["error"] = "manifest fetch failed: {}".format(e)
         return result
@@ -355,7 +383,11 @@ def apply(config, on_progress=None):
             continue
         want = meta.get("sha256") if isinstance(meta, dict) else meta
         if file_hash(name) != want:
-            todo.append((name, want))
+            fetch_from = _fetch_path(name, meta)
+            if fetch_from is None:
+                result["error"] = "manifest has an unsafe path for " + name
+                return result
+            todo.append((name, want, fetch_from))
 
     if not todo:
         result["ok"] = True
@@ -365,12 +397,12 @@ def apply(config, on_progress=None):
 
     # 2. download EVERYTHING to .new first - nothing live is touched yet
     staged = []
-    for name, want in todo:
+    for name, want, fetch_from in todo:
         if on_progress:
             on_progress(name)
         gc.collect()
         tmp = name + ".new"
-        if not _download_to(url + name, tmp, want):
+        if not _download_to(url + fetch_from, tmp, want):
             for s in staged:
                 _unlink(s + ".new")
             result["error"] = "download/verify failed: " + name
