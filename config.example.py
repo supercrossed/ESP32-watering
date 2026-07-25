@@ -1,0 +1,90 @@
+# config.example.py
+# Copy this file to config.py and edit it for your build:
+#     cp config.example.py config.py
+# config.py is gitignored so your WiFi password never reaches the repo.
+#
+# You can also leave the WiFi fields as-is: on first boot the device
+# opens a "Planter-Setup-xxxx" hotspot and you enter credentials from
+# your phone (they are saved to wifi.json on the device).
+# All the settings you're likely to want to change live here.
+
+# ---- WiFi ----
+WIFI_SSID = "YOUR_WIFI_SSID"
+WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"
+
+# ---- I2C (ADS1115) ----
+I2C_SCL_PIN = 22
+I2C_SDA_PIN = 21
+ADS1115_ADDRESS = 0x48
+
+# ---- Valves (IRF520 MOSFET gate pin) ----
+# Each valve is a separate solenoid. name = referenced by zones/schedules.
+# flow_meter_pin = None until a YF-S201 is wired to that valve's line.
+VALVES = [
+    {"name": "valve1", "pin": 26, "active_high": True, "flow_meter_pin": None},
+]
+
+# ---- Moisture zones ----
+# channel = ADS1115 input (0-3)
+# dry_raw / wet_raw = calibration readings (see README calibration steps)
+# threshold_percent = below this, zone is considered "dry" (used as default;
+#                      overridable at runtime via the web UI)
+# valve = name of the VALVES entry this zone's supplemental watering opens
+ZONES = [
+    {"name": "zone1", "channel": 0, "dry_raw": 17500, "wet_raw": 8000, "threshold_percent": 30, "valve": "valve1"},
+    {"name": "zone2", "channel": 1, "dry_raw": 17500, "wet_raw": 8000, "threshold_percent": 30, "valve": "valve1"},
+]
+
+# ---- Watering behavior (defaults; overridable at runtime via web UI) ----
+DAILY_WATER_HOUR = 6          # 0-23, local time (see TZ_OFFSET_SEC)
+DAILY_WATER_MINUTE = 0
+DAILY_WATER_DURATION_SEC = 300        # no flow meter yet, so duration-based
+SUPPLEMENTAL_WATER_DURATION_SEC = 60
+MIN_SUPPLEMENTAL_INTERVAL_SEC = 7200  # don't re-trigger moisture watering more than 1x per 2hr
+POST_DAILY_LOCKOUT_SEC = 4 * 3600     # skip moisture watering for 4hr after daily run
+
+# ---- Status LED (onboard "D2" blue LED on GPIO 2, active high) ----
+# Solid   = WiFi connected AND web server up (all good)
+# Fast blink = WiFi down (reconnecting; rescue hotspot may be open)
+# Slow blink = WiFi up but web server down (retrying every 30s)
+# None disables (frees GPIO 2 for other use).
+STATUS_LED_PIN = 2
+
+# Print one console line per HTTP request ("web: GET /api/status").
+# Invaluable when debugging reachability - if the browser is loading the
+# dashboard, these MUST appear; silence means packets never arrive.
+# Turn off once stable (it spams the serial console every 5s poll).
+WEB_DEBUG = True
+
+# ---- Safety ----
+MAX_VALVE_OPEN_SEC = 600  # absolute hard cutoff regardless of any other logic
+
+# Hardware watchdog: if the main loop hangs (e.g. an I2C lockup) for this
+# many seconds, the ESP32 reboots itself - and valves close on boot, so a
+# hang can't leave water running. SET TO 0 WHILE DEVELOPING WITH THONNY:
+# once armed the watchdog cannot be stopped, so a board sitting at the
+# REPL will reboot every cycle.
+WATCHDOG_TIMEOUT_SEC = 120
+
+# If WiFi stays down this long at runtime, open the rescue hotspot
+# ("Planter-Setup-xxxx") ALONGSIDE normal operation - watering keeps
+# running, reconnect attempts continue, and joining the hotspot reaches
+# the dashboard at http://192.168.4.1 to fix the network. 0 disables.
+WIFI_RESCUE_AFTER_SEC = 300
+
+# Optional nightly maintenance reboot at this local hour (0-23) - the
+# classic embedded uptime trick: valves close on boot, so a quiet-hour
+# reboot is invisible and clears any slow memory/driver degradation.
+# None disables. Only fires once the clock is NTP-synced and no watering
+# is active or queued.
+DAILY_REBOOT_HOUR = None
+
+# ---- Timing ----
+MOISTURE_CHECK_INTERVAL_SEC = 15
+TZ_OFFSET_SEC = -5 * 3600  # EST; adjust for your timezone / DST manually
+
+# ---- Flow meter (not installed yet - placeholder for later) ----
+# Per-valve flow_meter_pin lives on each VALVES entry above. Once a YF-S201
+# is wired and pulse-counting is implemented in main.py, PULSES_PER_LITER
+# converts pulse count to liters for volume-based watering.
+PULSES_PER_LITER = 450

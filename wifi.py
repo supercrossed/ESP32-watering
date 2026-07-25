@@ -1,0 +1,106 @@
+# wifi.py
+import network
+import time
+import ujson as json
+
+WIFI_FILE = "wifi.json"
+
+
+def load_creds(config):
+    """Credentials from wifi.json (written by the captive setup portal),
+    falling back to config.py for boards flashed the old way."""
+    try:
+        with open(WIFI_FILE) as f:
+            data = json.load(f)
+        if data.get("ssid"):
+            return {"ssid": data["ssid"], "password": data.get("password", "")}
+    except (OSError, ValueError):
+        pass
+    return {"ssid": config.WIFI_SSID, "password": config.WIFI_PASSWORD}
+
+
+def save_creds(ssid, password):
+    with open(WIFI_FILE, "w") as f:
+        json.dump({"ssid": ssid, "password": password}, f)
+
+
+def current_ip():
+    try:
+        return network.WLAN(network.STA_IF).ifconfig()[0]
+    except OSError:
+        return "?"
+
+
+def connect(ssid, password, timeout_sec=20):
+    wlan = network.WLAN(network.STA_IF)
+    try:
+        # mDNS name: reach the dashboard at http://planter.local even if
+        # DHCP moves the IP. Must be set before the interface associates.
+        network.hostname("planter")
+    except (AttributeError, OSError):
+        pass  # older MicroPython - IP-only access still works
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Connecting to WiFi:", ssid)
+        try:
+            wlan.connect(ssid, password)
+        except OSError as e:
+            print("WiFi connect error:", e)
+            return None
+        start = time.time()
+        while not wlan.isconnected():
+            if time.time() - start > timeout_sec:
+                print("WiFi connect timed out")
+                return None
+            time.sleep(0.5)
+    cfg = wlan.ifconfig()
+    # full tuple, not just the IP: if the gateway here differs from the
+    # router the PC uses, the ESP32 joined a DIFFERENT access point
+    # broadcasting the same SSID (extender/mesh node) - a classic cause of
+    # "device is online but unreachable from the LAN"
+    print("WiFi connected, IP: {} mask: {} gw: {} dns: {}".format(*cfg))
+    return cfg[0]
+
+
+def is_connected():
+    try:
+        return network.WLAN(network.STA_IF).isconnected()
+    except OSError:
+        return False
+
+
+def ensure_connected(ssid, password):
+    """Called periodically from the main loop. If the connection dropped
+    (router rebooted, signal loss), kick off a reconnect attempt without
+    blocking - watering keeps running while WiFi is down."""
+    wlan = network.WLAN(network.STA_IF)
+    if wlan.isconnected():
+        return True
+    try:
+        wlan.active(True)
+        wlan.connect(ssid, password)
+    except OSError:
+        pass
+    return False
+
+
+def portal_needed(ssid):
+    """Decide whether a failed boot-time connect should open the captive
+    setup portal. If the target network is VISIBLE but we couldn't join,
+    the password is probably wrong (or this is a fresh kit) -> portal.
+    If it isn't visible, the router is probably just down -> keep running
+    offline and let ensure_connected() retry; watering doesn't need WiFi."""
+    if not ssid or ssid == "YOUR_WIFI_SSID":
+        return True
+    wlan = network.WLAN(network.STA_IF)
+    try:
+        wlan.active(True)
+        visible = set()
+        for net in wlan.scan():
+            try:
+                visible.add(net[0].decode())
+            except Exception:
+                pass
+        return ssid in visible
+    except OSError:
+        return False
