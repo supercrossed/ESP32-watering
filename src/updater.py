@@ -223,9 +223,9 @@ def tls_feasible(config=None):
         largest, MIN_TLS_HEAP)
 
 
-def _open_stream(url, timeout=20):
-    """Open a GET and return (socket, status_code, leftover_bytes). Caller
-    must close.
+def _open_stream(url, timeout=20, want_head=False):
+    """Open a GET and return (socket, status, leftover_bytes), plus the
+    raw header block when want_head=True. Caller must close.
 
     Every step is bounded by `timeout`. Without that, a stalled TLS
     handshake blocks the ENTIRE main loop - the web server, valve timing,
@@ -284,6 +284,8 @@ def _open_stream(url, timeout=20):
             status = int(head.split(b" ")[1])
         except (IndexError, ValueError):
             status = 0
+        if want_head:
+            return s, status, leftover, head
         return s, status, leftover
     except Exception:
         try:
@@ -333,12 +335,27 @@ def _fetch_small(url, limit=8192, timeout=20):
         gc.collect()
 
 
-def _download_to(url, dest, expect_hash, timeout=20):
+def _content_length(head):
+    """Content-Length from a response header block, or None."""
+    for line in head.split(b"\r\n"):
+        if line[:15].lower() == b"content-length:":
+            try:
+                return int(line[15:].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _download_to(url, dest, expect_hash, timeout=20, expect_size=None):
     """Stream a URL to `dest`, verifying its SHA-256. Returns True on a
     verified write; the temp file is removed on any failure."""
-    s, status, leftover = _open_stream(url, timeout)
+    s, status, leftover, head = _open_stream(url, timeout, want_head=True)
     h = _sha256()
     written = 0
+    # How many bytes we must end up with. The server's Content-Length is
+    # authoritative for the transfer; the manifest's size is what we were
+    # promised. Prefer the manifest, fall back to the header.
+    need = expect_size if expect_size else _content_length(head)
     try:
         if status in (301, 302, 307, 308):
             raise OSError("server redirected (HTTP {}) - device cannot follow "
@@ -351,14 +368,31 @@ def _download_to(url, dest, expect_hash, timeout=20):
                 written += len(leftover)
                 if h:
                     h.update(leftover)
-            while True:
+            # An empty read does NOT reliably mean end-of-stream: on a
+            # socket with a timeout it also happens when the next packet
+            # simply hasn't arrived yet. Treating it as EOF truncated large
+            # files (index.html at ~90KB failed while small .mpy files
+            # passed) and surfaced as a bogus hash mismatch. So: keep
+            # reading until we have the expected byte count, and only give
+            # up after several consecutive empty reads.
+            empty_reads = 0
+            while need is None or written < need:
                 chunk = s.read(_CHUNK)
                 if not chunk:
-                    break
+                    empty_reads += 1
+                    # ~2s of nothing at all - the peer really is done/gone
+                    if empty_reads > 20:
+                        break
+                    time.sleep(0.1)
+                    continue
+                empty_reads = 0
                 f.write(chunk)
                 written += len(chunk)
                 if h:
                     h.update(chunk)
+
+        if need is not None and written != need:
+            raise OSError("short read: got {} of {} bytes".format(written, need))
     except Exception as e:
         print("update: download failed for", dest, "-", e)
         _unlink(dest)
@@ -514,7 +548,8 @@ def apply(config, on_progress=None):
             if fetch_from is None:
                 result["error"] = "manifest has an unsafe path for " + name
                 return result
-            todo.append((name, want, fetch_from))
+            want_size = meta.get("size") if isinstance(meta, dict) else None
+            todo.append((name, want, fetch_from, want_size))
 
     if not todo:
         result["ok"] = True
@@ -524,12 +559,13 @@ def apply(config, on_progress=None):
 
     # 2. download EVERYTHING to .new first - nothing live is touched yet
     staged = []
-    for name, want, fetch_from in todo:
+    for name, want, fetch_from, want_size in todo:
         if on_progress:
             on_progress(name)
         gc.collect()
         tmp = name + ".new"
-        if not _download_to(url + fetch_from, tmp, want, _timeout(config)):
+        if not _download_to(url + fetch_from, tmp, want, _timeout(config),
+                            expect_size=want_size):
             for s in staged:
                 _unlink(s + ".new")
             result["error"] = "download/verify failed: " + name

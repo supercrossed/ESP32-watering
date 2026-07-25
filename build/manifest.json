@@ -1,6 +1,6 @@
 {
-    "version":  "2026.07.25.0002",
-    "generated":  "2026-07-25T00:02:12.1799181-04:00",
+    "version":  "2026.07.25.0006",
+    "generated":  "2026-07-25T00:06:44.3752313-04:00",
     "files":  {
                   "web.mpy":  {
                                   "sha256":  "d4772a13fc80ea09371ed81741b8bd7feba64ccc33a0960844d280112e99aff4",
@@ -33,8 +33,8 @@
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
-                                      "sha256":  "5d17ab9ace8b24d4436d0f30f8d95e4a3b03cfb9f5bcdd4dd4ab50f3c8652749",
-                                      "size":  5607,
+                                      "sha256":  "31af98dd4d1d01fcd39a882a9dd03ad843032dbb6eefe54ea9b1128b95ff5cda",
+                                      "size":  5973,
                                       "path":  "build/updater.mpy"
                                   },
                   "boot.py":  {
