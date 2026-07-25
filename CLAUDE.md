@@ -1,5 +1,31 @@
 # Project context for Claude Code
 
+## Keeping this file (and the docs) current
+
+**Every behavior change updates the docs in the SAME commit.** Nothing
+enforces this automatically, and drift has already shipped two real bugs:
+`config.example.py` went stale and left every fresh clone with OTA disabled,
+and `UPDATE_REPO` pointed at a repo that never existed (every OTA check
+would have 404'd). The checklist lives in `docs/CONTRIBUTING.md`:
+
+- **This file** — architecture, constraints, API list, reliability measures
+- **`README.md`** — only if install/first-run/parts changed (keep it ~150 lines)
+- **`docs/<area>.md`** — the guide for whatever changed
+- **`docs/CHANGELOG.md`** — a dated entry for anything user-visible
+
+## Repo layout
+
+```
+src/        device source - EDIT HERE
+build/      generated artifacts; committed, because OTA publishes from it
+docs/       guides (README.md there is the index)
+hardware/   3D models, enclosures, reference material
+```
+
+Build with `.\build_mpy.ps1` from the repo root. The device filesystem is
+flat; the OTA manifest records each file's repo path so devices know where
+to fetch from.
+
 This is a **MicroPython** firmware project for an **ESP32-WROOM-32** that runs
 a standalone automated plant-watering controller with a built-in web
 dashboard. It is NOT a CPython project — do not assume CPython stdlib is
