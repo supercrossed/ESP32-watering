@@ -70,12 +70,23 @@ $manifest = [ordered]@{
     generated = (Get-Date).ToString("o")
     files     = $files
 }
-$manifest | ConvertTo-Json -Depth 4 | Set-Content build\manifest.json -Encoding utf8
+# Write BOM-FREE UTF-8. Windows PowerShell's -Encoding utf8 prepends a
+# byte-order mark (EF BB BF), and MicroPython's json.loads() treats those
+# bytes as garbage before the opening brace - every OTA check would fail
+# with a parse error. [IO.File]::WriteAllText with a plain UTF8Encoding
+# ($false = no BOM) is the only reliable way to avoid it on PS 5.1.
+$noBom = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText(
+    (Join-Path $PWD "build\manifest.json"),
+    ($manifest | ConvertTo-Json -Depth 4),
+    $noBom)
 
 # The device records which version it installed; ship it so a fresh flash
 # starts from a known version rather than "unknown".
-[ordered]@{ version = $version; installed_at = $null } |
-    ConvertTo-Json | Set-Content build\version.json -Encoding utf8
+[IO.File]::WriteAllText(
+    (Join-Path $PWD "build\version.json"),
+    ([ordered]@{ version = $version; installed_at = $null } | ConvertTo-Json),
+    $noBom)
 
 Write-Host ""
 Write-Host "manifest.json written - version $version ($($files.Count) files)"
