@@ -154,6 +154,35 @@ and **GitHub stays the source of truth** - publishing is still `git push`.
 3. `UPDATE_BASE_URL = "http://your-worker.workers.dev/"`
    (**http**, not https - the device must not do TLS)
 
+#### Maintenance
+
+Essentially none. Workers don't expire, don't need a card on file, and
+don't go dormant from disuse. The script is stateless - it proxies GitHub
+and holds nothing - so there's nothing to patch or renew.
+
+Free tier is 100,000 requests/day. A planter uses ~2/day (manifest, plus
+any changed file), so ~1,000 devices would still sit at 2% of the limit.
+
+Two things to be aware of:
+
+- **Very long account inactivity** can lead Cloudflare to reclaim
+  resources. Logging in occasionally is enough to avoid it.
+- **The hostname is a hard dependency.** Deployed devices have
+  `UPDATE_BASE_URL` baked into their `config.py`. If the Worker is
+  deleted, renamed, or the account is lost, those devices lose OTA and
+  need a USB cable to be repointed.
+
+#### Use a custom domain if you ship kits
+
+Point a domain you own at the Worker (Worker settings -> Triggers ->
+Custom Domains, e.g. `updates.yourdomain.com`) and use
+`http://updates.yourdomain.com/` as `UPDATE_BASE_URL`.
+
+The hostname then belongs to you, not to Cloudflare. If you ever move off
+Workers - to a VPS, S3, anything - you re-point DNS and every deployed
+planter follows automatically. With a `workers.dev` subdomain you cannot
+do that, and a migration means physically visiting every device.
+
 ### Local mirror (development only)
 
 `serve_updates.ps1` serves the repo from your PC over HTTP. Useful for
