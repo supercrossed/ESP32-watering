@@ -47,7 +47,7 @@ POST_DAILY_LOCKOUT_SEC = 4 * 3600     # skip moisture watering for 4hr after dai
 # ---- Over-the-air updates (updater.py) ----
 # The device fetches manifest.json from this repo, compares SHA-256 hashes,
 # and downloads only what changed. Set to None to disable OTA entirely.
-UPDATE_REPO = "supercrossed/esp32-planter"
+UPDATE_REPO = "supercrossed/ESP32-watering"
 UPDATE_BRANCH = "main"
 # Check once a day at this local hour (0-23). None = never check
 # automatically; the dashboard's "Check now" button still works.
