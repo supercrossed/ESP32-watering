@@ -1060,7 +1060,10 @@ def _status_payload():
         "update": {
             "version": _installed_version(),
             "last_check": state.last_update_check,
-            "last_install": state.last_update_install,
+            # Prefer the persisted timestamp: an update REBOOTS the device,
+            # so the in-RAM value is always None right when it matters most
+            # ("Updated: never" immediately after a successful update).
+            "last_install": _installed_at() or state.last_update_install,
             "available": state.update_available,
             "error": state.update_error,
             "busy": state.update_in_progress or bool(state.update_requested),
@@ -1073,6 +1076,16 @@ def _installed_version():
     try:
         with open("version.json") as f:
             return json.load(f).get("version")
+    except (OSError, ValueError):
+        return None
+
+
+def _installed_at():
+    """Unix ts of the last OTA install, read from version.json so it
+    survives the reboot the install itself triggers."""
+    try:
+        with open("version.json") as f:
+            return json.load(f).get("installed_at")
     except (OSError, ValueError):
         return None
 

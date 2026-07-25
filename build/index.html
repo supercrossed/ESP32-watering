@@ -191,6 +191,31 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
 .status-badge.closed { background: var(--badge-closed); color: var(--ink-2); }
 .kv-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.85rem; }
 .kv-row .k { color: var(--muted); }
+
+/* Settings rows: label | input | unit, in a 3-column grid so every input
+   lines up in the same column no matter how long the label runs, and the
+   unit never wraps onto its own line. (A plain space-between flex put each
+   input wherever its label happened to end.) */
+.set-row {
+  display: grid;
+  grid-template-columns: 1fr 84px 34px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 0.85rem;
+  border-bottom: 1px dashed var(--line-2);
+}
+.set-row:last-of-type { border-bottom: none; }
+.set-row .k { color: var(--muted); }
+.set-row .k .small { display: block; margin-top: 2px; }
+.set-row input[type=number] { width: 100%; box-sizing: border-box; text-align: right; }
+.set-row .unit { color: var(--muted); font-size: 0.8rem; }
+/* Checkbox rows reuse the same grid so their label column matches, with
+   the box sitting in the input column. */
+.set-row input[type=checkbox] { justify-self: center; }
+@media (max-width: 420px) {
+  .set-row { grid-template-columns: 1fr 70px 30px; gap: 8px; }
+}
 .sched-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--card-2); }
 .sched-fields { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .sched-fields input[type=number] { width: 58px; }
@@ -419,14 +444,14 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
 <div class="card">
   <strong>Watering Settings</strong>
   <p class="small">Global behavior for automatic (moisture-triggered) watering. Each zone sets its own run time in Watering Zones; the default below covers the per-valve Trigger Watering button and any zone without its own.</p>
-  <label class="kv-row"><span class="k">Default watering run time</span><span><input id="ws-duration" type="number" min="1"> sec</span></label>
-  <label class="kv-row"><span class="k">Min time between moisture waterings</span><span><input id="ws-interval" type="number" min="0"> min</span></label>
-  <label class="kv-row"><span class="k">Cooldown after a scheduled watering <span class="small">before moisture watering can re-trigger the same valve</span></span><span><input id="ws-lockout" type="number" min="0"> hr</span></label>
-  <label class="kv-row"><span class="k">Soak wait before re-check <span class="small">after watering, wait this long, re-read the sensor, and water again if still below the zone's wet target</span></span><span><input id="ws-soak" type="number" min="20"> sec</span></label>
-  <label class="kv-row"><span class="k">Max waterings per dry event <span class="small">1 = no re-check; caps runaway watering if a sensor fails</span></span><span><input id="ws-cycles" type="number" min="1" max="10"></span></label>
-  <label class="kv-row"><span class="k">Scheduled watering enabled</span><input id="ws-daily" type="checkbox"></label>
-  <label class="kv-row"><span class="k">Moisture-triggered watering enabled</span><input id="ws-moisture" type="checkbox"></label>
-  <label class="kv-row"><span class="k">UTC offset (hours) <span class="small">EST -5 / EDT -4, CST -6, MST -7, PST -8; adjust for DST</span></span><span><input id="ws-tz" type="number" step="0.5" min="-12" max="14"></span></label>
+  <label class="set-row"><span class="k">Default watering run time</span><input id="ws-duration" type="number" min="1"><span class="unit">sec</span></label>
+  <label class="set-row"><span class="k">Min time between moisture waterings</span><input id="ws-interval" type="number" min="0"><span class="unit">min</span></label>
+  <label class="set-row"><span class="k">Cooldown after a scheduled watering <span class="small">before moisture watering can re-trigger the same valve</span></span><input id="ws-lockout" type="number" min="0"><span class="unit">hr</span></label>
+  <label class="set-row"><span class="k">Soak wait before re-check <span class="small">after watering, wait this long, re-read the sensor, and water again if still below the zone's wet target</span></span><input id="ws-soak" type="number" min="20"><span class="unit">sec</span></label>
+  <label class="set-row"><span class="k">Max waterings per dry event <span class="small">1 = no re-check; caps runaway watering if a sensor fails</span></span><input id="ws-cycles" type="number" min="1" max="10"><span class="unit"></span></label>
+  <label class="set-row"><span class="k">Scheduled watering enabled</span><input id="ws-daily" type="checkbox"><span class="unit"></span></label>
+  <label class="set-row"><span class="k">Moisture-triggered watering enabled</span><input id="ws-moisture" type="checkbox"><span class="unit"></span></label>
+  <label class="set-row"><span class="k">UTC offset (hours) <span class="small">EST -5 / EDT -4, CST -6, MST -7, PST -8; adjust for DST</span></span><input id="ws-tz" type="number" step="0.5" min="-12" max="14"><span class="unit">hr</span></label>
   <div style="margin-top:12px">
     <button onclick="saveWateringSettings()">Save Settings</button>
   </div>
