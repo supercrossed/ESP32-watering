@@ -1,6 +1,6 @@
 {
-    "version":  "2026.07.24.2356",
-    "generated":  "2026-07-24T23:56:08.4374075-04:00",
+    "version":  "2026.07.25.0002",
+    "generated":  "2026-07-25T00:02:12.1799181-04:00",
     "files":  {
                   "web.mpy":  {
                                   "sha256":  "d4772a13fc80ea09371ed81741b8bd7feba64ccc33a0960844d280112e99aff4",
@@ -58,8 +58,8 @@
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {
-                                     "sha256":  "55bbe6871b373c4a2216d54fe327a069019d47223013d7df50633ec4adfff4f4",
-                                     "size":  90536,
+                                     "sha256":  "05ee6ae41be65fb95ea8596cc0004fe0897f66978635ebec22a3e62ea92f062f",
+                                     "size":  90875,
                                      "path":  "build/index.html"
                                  },
                   "ads1x15.mpy":  {

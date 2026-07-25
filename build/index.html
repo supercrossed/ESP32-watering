@@ -117,6 +117,10 @@ body {
 }
 .card > p.small { margin: 6px 0 12px; }
 .small { font-size: 0.82rem; color: var(--muted); }
+/* The dashboard has almost no links; without this they render as default
+   browser blue, which reads as broken against the card backgrounds. */
+a { color: var(--green-text); }
+body.dark a { color: #7fc98a; }
 .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 label { font-size: 0.85rem; color: var(--ink-2); }
 button {
@@ -514,7 +518,8 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
   </div>
   <div class="small" id="ota-detail" style="margin-top:6px">
     Checked: <span id="ota-checked">never</span> &middot;
-    Updated: <span id="ota-updated">never</span>
+    Updated: <span id="ota-updated">never</span> &middot;
+    <a href="https://github.com/supercrossed/ESP32-watering" target="_blank" rel="noopener noreferrer">source code</a>
   </div>
   <div id="ota-status" class="small" style="margin-top:6px"></div>
   <div style="margin-top:10px">
@@ -1801,6 +1806,7 @@ function renderOta(u, nowTs) {
   ver.textContent = 'version ' + (u.version || 'unknown');
   document.getElementById('ota-checked').textContent = fmtAgo(nowTs, u.last_check);
   document.getElementById('ota-updated').textContent = fmtAgo(nowTs, u.last_install);
+
 
   if (u.available) {
     badge.style.display = '';
