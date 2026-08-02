@@ -139,7 +139,18 @@ def _handle_http(server, networks):
                     k, v = pair.split("=", 1)
                     fields[_url_decode(k)] = _url_decode(v)
             if fields.get("ssid"):
-                wifi.save_creds(fields["ssid"], fields.get("password", ""))
+                # save_creds verifies the write by reading it back; only
+                # reboot once we know the credentials actually landed.
+                try:
+                    wifi.save_creds(fields["ssid"], fields.get("password", ""))
+                except Exception as e:
+                    print("WiFi credential save FAILED:", e)
+                    _send(cl, _PAGE.replace(
+                        "{options}", _options(networks)).replace(
+                        "<h2>Planter WiFi Setup</h2>",
+                        "<h2>Planter WiFi Setup</h2>"
+                        "<p style='color:#b00'>Could not save - please try again.</p>"))
+                    return
                 _send(cl, _SAVED)
                 cl.close()
                 print("WiFi credentials saved for", fields["ssid"], "- rebooting")

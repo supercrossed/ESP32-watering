@@ -20,8 +20,24 @@ def load_creds(config):
 
 
 def save_creds(ssid, password):
+    """Persist credentials to flash and READ THEM BACK to confirm.
+
+    The caller reboots straight after this, so a silent write failure (full
+    flash, filesystem error) would drop the device back onto the old
+    network with no indication anything went wrong - and the user is
+    usually changing WiFi precisely because the old network is gone.
+    Raises OSError if the credentials didn't land."""
     with open(WIFI_FILE, "w") as f:
         json.dump({"ssid": ssid, "password": password}, f)
+    # verify: reopen and compare, so we never report success on a bad write
+    try:
+        with open(WIFI_FILE) as f:
+            back = json.load(f)
+    except (OSError, ValueError) as e:
+        raise OSError("saved WiFi credentials could not be read back: {}".format(e))
+    if back.get("ssid") != ssid or back.get("password", "") != password:
+        raise OSError("saved WiFi credentials did not match on read-back")
+    return True
 
 
 def current_ip():

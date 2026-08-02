@@ -7,6 +7,16 @@ Notable changes, newest first. Add an entry for anything user-visible - see
 
 ## 2026-07-25 (later)
 
+### WiFi credential saves are now verified
+Changing the network from the dashboard already persisted to `wifi.json`
+(and still does - it survives reboots and outranks `config.py`). But the
+write wasn't checked: if it failed, the device rebooted onto the *old*
+network having reported success - the worst case, since you're usually
+changing WiFi because the old network is gone. The save is now read back
+and compared before rebooting, and a failure surfaces in the dashboard
+with the planter left on its current network. Same protection in the setup
+portal.
+
 ### Fixed: watered immediately on every power-on
 Reported after a week of real use: unplugging and replugging the planter
 made it water straight away, regardless of how wet the soil was.

@@ -965,11 +965,25 @@ async function saveWifi() {
   const password = document.getElementById('wifi-new-pass').value;
   if (!ssid) { alert('Enter the network name (SSID).'); return; }
   if (!confirm('Switch WiFi to "' + ssid + '"? The ESP32 will reboot and join it. If the details are wrong, the setup hotspot will open so you can fix them.')) return;
-  await fetch('/api/wifi', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ssid, password }),
-  });
+  // Check the reply: the device verifies the write by reading it back, and
+  // reports a failure rather than rebooting onto the old network while
+  // telling us it saved.
+  try {
+    const r = await fetch('/api/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid, password }),
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      alert('Could not save: ' + (j.error || 'unknown error') +
+            '\n\nThe planter is still on its current network.');
+      return;
+    }
+  } catch (e) {
+    // the reboot can cut the connection before the reply arrives - that
+    // means it saved, so treat it as success
+  }
   alert('Saved - rebooting onto the new network. Reconnect to it to find the dashboard.');
 }
 

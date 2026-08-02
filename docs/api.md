@@ -110,7 +110,12 @@ Live bus scan: `{"found": [72, 73]}` (decimal; 0x48 = 72).
 
 ### `GET /api/wifi` &nbsp;&middot;&nbsp; `POST /api/wifi`
 GET returns the saved SSID and connection state - **never the password**.
-POST `{"ssid": "...", "password": "..."}` saves to `wifi.json` and reboots.
+
+POST `{"ssid": "...", "password": "..."}` saves to `wifi.json` (which
+persists across reboots and takes priority over `config.py`) and reboots.
+The write is verified by reading it back first; if it fails the device
+responds `500` with an error and does **not** reboot, so it can't land back
+on the old network while reporting success.
 
 ### `GET /api/config/export` &nbsp;&middot;&nbsp; `POST /api/config/import`
 Download or restore the full configuration as a JSON file. Excludes WiFi

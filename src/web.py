@@ -296,7 +296,16 @@ def _handle(cl):
         if not ssid:
             _send(cl, 400, "application/json", json.dumps({"ok": False, "error": "ssid required"}))
         else:
-            wifi.save_creds(ssid, password)
+            # Save and verify BEFORE promising a reboot: if the write
+            # failed we'd come back on the old network having said "ok".
+            try:
+                wifi.save_creds(ssid, password)
+            except Exception as e:
+                state.log_event("wifi", "credential save FAILED: {}".format(e))
+                _send(cl, 500, "application/json",
+                      json.dumps({"ok": False,
+                                  "error": "could not save credentials: {}".format(e)}))
+                return
             _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
             cl.close()
             state.log_event("reboot", "wifi credentials changed to " + ssid)

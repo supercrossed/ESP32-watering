@@ -42,6 +42,13 @@ Open the printed IP in a browser, or try <http://planter.local>.
 Credentials are saved to `wifi.json` on the device - never in `config.py`,
 never in the repo.
 
+**They persist across reboots and power cuts.** `wifi.json` is written to
+flash and takes priority over `config.py` at every boot, so a network
+changed from the dashboard's WiFi card (or the setup portal) stays changed.
+The write is read back and verified before the device reboots - if it
+couldn't be saved you get an error and stay on the current network, rather
+than rebooting onto the old one believing it worked.
+
 **If the router is simply down** (network not visible), no portal opens - the
 planter keeps running offline and retries. Watering doesn't need WiFi.
 
