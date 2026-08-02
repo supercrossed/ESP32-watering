@@ -1,10 +1,10 @@
 {
-    "version":  "2026.07.25.0006",
-    "generated":  "2026-07-25T00:06:44.3752313-04:00",
+    "version":  "2026.08.02.1115",
+    "generated":  "2026-08-02T11:15:24.7182874-04:00",
     "files":  {
                   "web.mpy":  {
-                                  "sha256":  "d4772a13fc80ea09371ed81741b8bd7feba64ccc33a0960844d280112e99aff4",
-                                  "size":  14809,
+                                  "sha256":  "652e064190f335369aeefc704a5739b75b9257b5ae4a687402db395467449422",
+                                  "size":  14947,
                                   "path":  "build/web.mpy"
                               },
                   "valve.mpy":  {
@@ -18,8 +18,8 @@
                                    "path":  "build/wifi.mpy"
                                },
                   "state.mpy":  {
-                                    "sha256":  "1c0d0e88f62476d2f3fcf59fd5aafd8585c00d9faa8973e38b04269d118ee1c6",
-                                    "size":  1657,
+                                    "sha256":  "8d120971084b194b75cf1062f5bb548265479f851ea63ad1c15b0dc193ad7182",
+                                    "size":  2256,
                                     "path":  "build/state.mpy"
                                 },
                   "env_sensors.mpy":  {
@@ -28,8 +28,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "237841566f11f621fe6a947510e3dc7dc75b87487f403f961550713ef34ea604",
-                                  "size":  31795,
+                                  "sha256":  "e06babff9744a60b35beac22f70f1838a182fafea1deb137dbade968bd5ee1ee",
+                                  "size":  34114,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
@@ -58,8 +58,8 @@
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {
-                                     "sha256":  "05ee6ae41be65fb95ea8596cc0004fe0897f66978635ebec22a3e62ea92f062f",
-                                     "size":  90875,
+                                     "sha256":  "ea0f653acb21b8d534806628087a641e9b0252d1943df757552b2665bf15cd40",
+                                     "size":  91446,
                                      "path":  "build/index.html"
                                  },
                   "ads1x15.mpy":  {

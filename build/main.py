@@ -148,6 +148,18 @@ _default_valve_name = hw["valves"][0]["name"] if hw["valves"] else None
 
 state.log_event("boot", "controller started")
 
+# Restore the per-valve cooldowns saved when watering last finished, so a
+# power cut doesn't wipe the planter's memory of having just watered. Only
+# meaningful once the clock is real - before NTP sync time.time() is in the
+# 2000 epoch and every saved timestamp looks like the far future, which
+# load_watering_state() discards.
+if state.time_synced:
+    try:
+        if state.load_watering_state():
+            print("Restored watering cooldowns from before the last reboot")
+    except Exception as e:
+        print("could not restore watering state:", e)
+
 _active_watering = None  # {"valve_name", "reason"} while a valve is open
 _pending_valves = []  # queue of (valve_name, duration_sec, reason) - multi-valve schedules and moisture triggers share this
 # Soak-and-recheck session for moisture-triggered watering: water, wait
@@ -207,6 +219,13 @@ def check_active_watering():
         state.last_daily_watering_ts[valve_name] = time.time()
     elif reason == "moisture_trigger":
         state.last_supplemental_watering_ts[valve_name] = time.time()
+    if reason in ("daily_schedule", "moisture_trigger"):
+        # persist so a power cut can't erase the cooldown and let the
+        # planter water again the moment it comes back up
+        try:
+            state.save_watering_state()
+        except Exception as e:
+            print("watering state save failed:", e)
     _active_watering = None
 
     # fire the next queued valve, if any (multi-valve schedule or a zone
@@ -301,6 +320,28 @@ def check_moisture_and_water():
     state.log_moisture(readings)
 
     if not settings.get("moisture_watering_enabled", True):
+        return
+
+    # STARTUP GRACE: read sensors right away (the dashboard needs data) but
+    # don't WATER for the first STARTUP_GRACE_SEC after boot.
+    #
+    # Two reasons, both of which caused real unwanted watering:
+    #   1. A capacitive probe needs a moment to settle after power-on; the
+    #      first reading or two can be meaningless.
+    #   2. The cooldown timestamps live in RAM, so a power cycle erases all
+    #      memory of recent watering. Without this delay, unplugging and
+    #      replugging the planter waters immediately - however wet the soil
+    #      already is, and however recently it was last watered.
+    #
+    # The grace window covers several sensor cycles, so when watering is
+    # finally allowed the decision rests on settled, repeated readings.
+    grace = getattr(config, "STARTUP_GRACE_SEC", 60)
+    if grace and time.time() - state.boot_time < grace:
+        if not state.startup_grace_logged:
+            state.startup_grace_logged = True
+            state.log_event(
+                "startup",
+                "moisture watering held for {}s while sensors settle".format(grace))
         return
 
     dry_zones = [r["name"] for r in readings if r["percent"] < r["threshold"]]
@@ -419,6 +460,11 @@ except Exception as e:
     state.log_event("web", "server init failed: {}".format(e))
 
 # ---- Main loop ----
+# Sensors are READ immediately (so the dashboard has data right away), but
+# moisture WATERING is held off for STARTUP_GRACE_SEC - see
+# check_moisture_and_water(). A capacitive probe needs a moment to settle,
+# and one reading taken microseconds after power-on is not a sound basis
+# for opening a valve.
 last_moisture_check = 0
 last_schedule_check = 0
 last_wifi_check = 0

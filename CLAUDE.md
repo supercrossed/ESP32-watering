@@ -171,6 +171,19 @@ as each valve closes, since only one valve runs at a time system-wide:
    blocked while a session is active; cooldowns run from the session's
    last close.
 
+**Power-on behavior**: moisture watering is held for
+`config.STARTUP_GRACE_SEC` (default 60s) after boot — sensors are read
+immediately (dashboard populates) but no valve opens. Capacitive probes
+need time to settle, and one reading taken microseconds after power-on
+once opened a valve on already-wet soil. Additionally the per-valve
+cooldown timestamps are persisted to `watering_state.json` on every
+watering close and restored at boot (`state.save_watering_state()` /
+`load_watering_state()`), because they previously lived only in RAM — a
+power cut erased all memory of recent watering and the planter re-watered
+immediately. Restored timestamps that are in the future or >7 days old are
+discarded (pre-NTP 2000-epoch values). `/api/status` exposes
+`startup_grace_left`.
+
 A hard safety cutoff force-closes any valve open longer than
 `MAX_VALVE_OPEN_SEC`, checked every loop, independently per valve. A
 hardware watchdog (`config.WATCHDOG_TIMEOUT_SEC`, default 120s; **set to 0

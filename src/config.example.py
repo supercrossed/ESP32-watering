@@ -90,6 +90,16 @@ STATUS_LED_PIN = 2
 # Turn off once stable (it spams the serial console every 5s poll).
 WEB_DEBUG = True
 
+# ---- Startup ----
+# Hold off moisture-triggered watering for this many seconds after boot.
+# Sensors are still READ immediately (the dashboard populates right away) -
+# only watering waits. Two reasons: a capacitive probe needs a moment to
+# settle after power-on, and the cooldown timestamps are restored from
+# flash at boot, which needs the clock. Without this, power-cycling the
+# planter made it water immediately regardless of how wet the soil was.
+# 0 disables (not recommended).
+STARTUP_GRACE_SEC = 60
+
 # ---- Safety ----
 MAX_VALVE_OPEN_SEC = 600  # absolute hard cutoff regardless of any other logic
 

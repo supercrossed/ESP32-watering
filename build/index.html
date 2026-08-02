@@ -375,6 +375,7 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
         <tbody id="status-valves"></tbody>
       </table>
       <div class="kv-row" style="margin-top:10px"><span class="k">Uptime</span><span id="status-uptime">-</span></div>
+      <div class="kv-row" id="status-grace-row" style="display:none"><span class="k">Startup</span><span id="status-grace">-</span></div>
       <div class="kv-row"><span class="k">Clock</span><span id="status-clock">-</span></div>
       <div class="kv-row"><span class="k">WiFi</span><span id="status-wifi">-</span></div>
       <div class="kv-row"><span class="k">CPU load</span><span id="status-cpu">-</span></div>
@@ -741,6 +742,17 @@ async function refresh() {
   const upMin = Math.floor(s.uptime_sec / 60);
   document.getElementById('status-uptime').textContent =
     upMin >= 60 ? Math.floor(upMin / 60) + 'h ' + (upMin % 60) + 'm' : upMin + ' min';
+  // Only shown right after a boot: explains why a dry zone isn't being
+  // watered yet, instead of looking like a fault.
+  const graceRow = document.getElementById('status-grace-row');
+  if (s.startup_grace_left > 0) {
+    graceRow.style.display = '';
+    document.getElementById('status-grace').textContent =
+      'settling - watering held for ' + s.startup_grace_left + 's';
+  } else {
+    graceRow.style.display = 'none';
+  }
+
   document.getElementById('status-clock').textContent = s.time_synced
     ? 'synced (NTP)'
     : 'NOT SYNCED - scheduled watering paused until the clock syncs';

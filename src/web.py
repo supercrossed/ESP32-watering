@@ -1045,6 +1045,10 @@ def _status_payload():
         "any_valve_open": state.any_valve_open(),
         "uptime_sec": time.time() - state.boot_time,
         "now": time.time(),
+        # seconds left before moisture watering is allowed after boot (0 =
+        # ready). The dashboard shows this so "why isn't it watering?" has
+        # a visible answer right after a power cycle.
+        "startup_grace_left": _startup_grace_left(),
         "time_synced": state.time_synced,
         "wifi_connected": wifi.is_connected(),
         "env": state.env,
@@ -1070,6 +1074,15 @@ def _status_payload():
             "result": state.update_last_result,
         },
     }
+
+
+def _startup_grace_left():
+    """Seconds until moisture watering is allowed after boot, 0 once past."""
+    grace = getattr(config, "STARTUP_GRACE_SEC", 60)
+    if not grace:
+        return 0
+    left = grace - (time.time() - state.boot_time)
+    return int(left) if left > 0 else 0
 
 
 def _installed_version():

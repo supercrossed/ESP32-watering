@@ -137,6 +137,9 @@ This controls water near electronics and, potentially, your house.
   checked every loop.
 - A hardware watchdog reboots the board if the loop hangs; **valves close on
   boot**, so a hang can't leave water running.
+- **Watering is held for 60s after power-on** so the sensors can settle, and
+  the per-valve cooldowns are restored from flash - a power cut can't make
+  the planter forget it just watered.
 - The dashboard has **no authentication**. Anyone on your LAN can control it.
   Don't port-forward it.
 

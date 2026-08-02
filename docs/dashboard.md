@@ -25,6 +25,8 @@ watering / just watered), alongside:
 - Per-zone moisture with thresholds
 - Per-valve state: open/closed, how long, last run and why
 - Uptime, clock sync status, WiFi state
+- `Startup: settling...` for the first minute after a boot, while
+  moisture watering is held ([why](watering.md#at-power-on))
 - CPU load and memory - including the ESP-IDF C heap
   ([why that matters](development.md#the-two-heap-problem))
 

@@ -19,6 +19,7 @@ settings are deliberately *not* included.
   "valves": {"valve1": {"open": false, "seconds_open": 0,
                         "last_close_ts": 1753412400, "last_close_reason": "moisture_trigger"}},
   "uptime_sec": 8412, "now": 1753420812,
+  "startup_grace_left": 0,
   "time_synced": true, "wifi_connected": true,
   "env": {"temp_c": 22.4, "humidity": 51, "pressure_hpa": 1013.2, "rain": false},
   "mem_free": 94704, "mem_alloc": 45312, "cpu_percent": 3,
@@ -27,6 +28,10 @@ settings are deliberately *not* included.
              "last_install": null, "available": null, "error": null, "busy": false}
 }
 ```
+
+`startup_grace_left` counts down the seconds until moisture watering is
+allowed after a boot (0 once past). See
+[watering.md](watering.md#at-power-on).
 
 ### `GET /api/history`
 Moisture readings over time. Decimated to one point per minute, 180 points

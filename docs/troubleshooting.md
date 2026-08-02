@@ -146,6 +146,28 @@ across the clock jump. Update if you still see it.
 
 ---
 
+## It waters as soon as it powers on
+
+Fixed in current versions - update if you see this.
+
+Two causes, both addressed. Moisture watering now waits
+`STARTUP_GRACE_SEC` (60s default) after boot so the sensors can settle;
+before that, a single reading taken microseconds after power-on could open
+a valve. And the per-valve cooldowns are now persisted to
+`watering_state.json` and restored at boot - previously they lived only in
+RAM, so a power cut erased all memory of recent watering and the planter
+would water again immediately regardless of soil moisture.
+
+During the grace window the System Status card shows
+`Startup: settling - watering held for Ns`.
+
+If it still waters at power-on after updating, check that the zone really
+is below its threshold in the Moisture Readings card - a mis-calibrated
+sensor reading permanently dry will water whenever the cooldowns allow.
+See [setup.md](setup.md#calibrating-a-moisture-sensor).
+
+---
+
 ## Schedules never fire
 
 Schedules are held until NTP sync succeeds - check for `Time synced via NTP`

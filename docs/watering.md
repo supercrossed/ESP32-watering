@@ -16,6 +16,33 @@ Both resolve to a list of valve names before anything opens.
 
 ---
 
+## At power-on
+
+**The planter does not water for the first 60 seconds after boot**
+(`STARTUP_GRACE_SEC`). Sensors are read immediately - the dashboard fills in
+right away - but watering is held.
+
+Two reasons, both of which caused real unwanted watering:
+
+- A capacitive probe needs a moment to settle after power-on. One reading
+  taken microseconds after boot is not a sound basis for opening a valve.
+- The cooldown timestamps are restored from flash at boot, which needs the
+  clock to be sane.
+
+While the grace period is active the System Status card shows
+`Startup: settling - watering held for Ns`, so a dry zone that isn't being
+watered doesn't look like a fault.
+
+**Cooldowns survive a power cut.** Every time a watering finishes, the
+per-valve timestamps are written to `watering_state.json` and restored at
+the next boot. Without this, unplugging and replugging the planter erased
+all memory of recent watering and it would water again immediately,
+however wet the soil was.
+
+Set `STARTUP_GRACE_SEC = 0` to disable the delay (not recommended).
+
+---
+
 ## Moisture watering
 
 Every zone is read on a cycle (15 seconds by default). A zone reading below
@@ -141,6 +168,7 @@ All editable from the dashboard; stored in `settings.json` on the device.
 | `min_supplemental_interval_sec` | 7200 | Gap between moisture triggers |
 | `post_daily_lockout_sec` | 14400 | Moisture lockout after a schedule |
 | `tz_offset_min` | -300 | UTC offset in minutes |
+| `STARTUP_GRACE_SEC` | 60 | Hold watering this long after boot (`config.py`) |
 | `daily_enabled` | true | Master switch for schedules |
 | `moisture_watering_enabled` | true | Master switch for moisture watering |
 

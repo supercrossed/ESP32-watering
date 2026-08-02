@@ -24,6 +24,69 @@ valves = {}
 # must not lock out watering on an unrelated valve.
 last_daily_watering_ts = {}
 last_supplemental_watering_ts = {}
+# True once the "holding watering while sensors settle" event has been
+# logged this boot - the check runs every sensor cycle, log it once.
+startup_grace_logged = False
+
+# Watering timestamps are persisted to flash so a power cut doesn't erase
+# the cooldowns. Without this, unplugging and replugging the planter made
+# it forget it had just watered and it would water again immediately.
+WATERING_STATE_FILE = "watering_state.json"
+
+
+def save_watering_state():
+    """Persist the per-valve cooldown timestamps. Called after each close -
+    cheap (a few hundred bytes) and only on state change, not per loop."""
+    try:
+        import ujson as json
+    except ImportError:
+        import json
+    try:
+        with open(WATERING_STATE_FILE, "w") as f:
+            json.dump({
+                "daily": last_daily_watering_ts,
+                "supplemental": last_supplemental_watering_ts,
+                "saved_at": time.time(),
+            }, f)
+    except (OSError, ValueError) as e:
+        print("could not save watering state:", e)
+
+
+def load_watering_state():
+    """Restore cooldowns at boot. Silently ignores a missing or corrupt
+    file - worst case we're back to the old behaviour for one cycle.
+
+    Timestamps from BEFORE an NTP sync are in the 2000 epoch and would look
+    like the distant past (or future) once the clock jumps, so anything not
+    plausibly in the past relative to now is dropped."""
+    global last_daily_watering_ts, last_supplemental_watering_ts
+    try:
+        import ujson as json
+    except ImportError:
+        import json
+    try:
+        with open(WATERING_STATE_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    now = time.time()
+
+    def _sane(d):
+        out = {}
+        for name, ts in (d or {}).items():
+            try:
+                ts = float(ts)
+            except (TypeError, ValueError):
+                continue
+            # a timestamp in the future, or older than a week, is stale or
+            # from a different clock epoch - ignore it
+            if 0 < ts <= now and (now - ts) < 7 * 24 * 3600:
+                out[name] = ts
+        return out
+
+    last_daily_watering_ts = _sane(data.get("daily"))
+    last_supplemental_watering_ts = _sane(data.get("supplemental"))
+    return bool(last_daily_watering_ts or last_supplemental_watering_ts)
 last_schedule_fired = {}  # schedule id -> unix ts it last fired
 boot_time = time.time()
 time_synced = False  # set once NTP succeeds; schedules are held off until then

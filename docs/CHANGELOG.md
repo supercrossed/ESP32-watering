@@ -5,6 +5,60 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-07-25 (later)
+
+### Fixed: watered immediately on every power-on
+Reported after a week of real use: unplugging and replugging the planter
+made it water straight away, regardless of how wet the soil was.
+
+Two independent causes, both fixed:
+
+- **No settling time.** The first moisture check ran on the very first loop
+  iteration, so a valve could open on a single reading taken microseconds
+  after power-on - before a capacitive probe has settled. Moisture watering
+  now waits `STARTUP_GRACE_SEC` (60s default) after boot. Sensors are still
+  read immediately, so the dashboard populates right away; only watering is
+  held, and the System Status card shows `Startup: settling - watering held
+  for Ns` so it doesn't look like a fault.
+- **Cooldowns lived only in RAM.** A power cut erased all memory of recent
+  watering, so `min_supplemental_interval_sec` and `post_daily_lockout_sec`
+  both read as "never watered". They're now written to
+  `watering_state.json` when a watering finishes and restored at boot.
+  Timestamps from before an NTP sync (2000 epoch) are discarded rather than
+  trusted.
+
+New setting `STARTUP_GRACE_SEC` in `config.py`; 0 disables. New
+`startup_grace_left` field in `/api/status`.
+
+---
+
+## 2026-07-25
+
+### Fixed: OTA downloads truncated on larger files
+The download loop treated an empty `read()` as end-of-stream. On a socket
+with a timeout an empty read *also* means "the next packet hasn't arrived
+yet", so the loop stopped early, hashed a partial file, and reported a hash
+mismatch. `index.html` (~90KB) failed consistently while the small `.mpy`
+files passed - they never spanned enough packets to hit the window.
+
+The loop now reads until it has the expected byte count (manifest `size`,
+falling back to `Content-Length`), gives up only after ~2s of genuine
+silence, and fails explicitly on a short read.
+
+### Fixed: "Updated: never" straight after an update
+The install timestamp lived only in RAM, and installing *reboots the
+device* - so it was always blank exactly when it mattered. It's now read
+from `version.json`, which persists.
+
+### Watering Settings inputs aligned
+The rows were a `space-between` flex, so each input started wherever its
+label ended, and the unit wrapped onto its own line when the label was
+long. They're now a 3-column grid (label | input | unit).
+
+### Added: source-code link on the Firmware card
+
+---
+
 ## 2026-07-24 (later)
 
 ### HTTPS disabled by default - it hangs on ESP32-WROOM-32
