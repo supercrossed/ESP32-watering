@@ -16,6 +16,25 @@ print("Booting planter controller...")
 gc.collect()
 print("Free heap before WiFi connect:", gc.mem_free(), "bytes")
 
+# Clear the status LED immediately. A WS2812 latches its last colour and
+# the EN/reset button does NOT cut power to it, so without this the board
+# keeps showing whatever it displayed before the reboot - which reads as
+# "nothing happened" when you press reset. A brief dim white also gives a
+# visible "I'm booting" signal before WiFi work begins.
+try:
+    _led_pin = getattr(config, "STATUS_LED_PIN", None)
+    if _led_pin is not None:
+        try:
+            import neopixel
+            _boot_np = neopixel.NeoPixel(Pin(_led_pin), 1)
+            _boot_np[0] = (8, 8, 8)   # dim white: booting
+            _boot_np.write()
+            del _boot_np, neopixel
+        except Exception:
+            Pin(_led_pin, Pin.OUT, value=0)  # plain LED: off
+except Exception:
+    pass  # an indicator must never delay or break the boot
+
 
 def idf_heap():
     """(free, largest_block) of the ESP-IDF C heap - the one the WiFi,
@@ -40,9 +59,36 @@ if not wifi.connect(_wifi_creds["ssid"], _wifi_creds["password"]):
     # the captive setup portal. Router just down (network not visible) ->
     # keep running offline; watering doesn't need WiFi, and the main loop
     # retries the connection every 30s.
-    if wifi.portal_needed(_wifi_creds["ssid"]):
-        import wifi_setup
-        wifi_setup.run()  # serves the setup page forever; reboots on save
+    # Credentials that came from the portal and don't work must reopen the
+    # portal - otherwise a typo strands the device with no network and no
+    # hotspot, recoverable only over USB.
+    if wifi.portal_needed(_wifi_creds["ssid"], wifi.has_saved_creds()):
+        # Light the LED before blocking in the portal: run() never returns,
+        # so the main loop's LED code below is never reached. Without this
+        # the board sits dark during setup - exactly when a new owner most
+        # needs to know it's alive and waiting for them.
+        try:
+            _p = getattr(config, "STATUS_LED_PIN", None)
+            if _p is not None:
+                try:
+                    import neopixel
+                    _np = neopixel.NeoPixel(Pin(_p), 1)
+                    _np[0] = (0, 0, 60)      # steady blue: waiting for setup
+                    _np.write()
+                except Exception:
+                    Pin(_p, Pin.OUT, value=1)  # plain LED: solid on
+        except Exception:
+            pass  # an indicator must never block setup
+
+        # The portal must never take the controller down: if the AP can't
+        # start we fall through to normal offline operation (watering does
+        # not need WiFi) and the main loop keeps retrying the connection.
+        try:
+            import wifi_setup
+            wifi_setup.run()  # serves the setup page forever; reboots on save
+        except Exception as e:
+            print("setup portal failed to start:", e)
+            print("continuing offline - watering still runs, WiFi will retry")
     print("WiFi unavailable - running offline, will keep retrying")
 
 import state
@@ -489,14 +535,64 @@ if getattr(config, "WATCHDOG_TIMEOUT_SEC", 0):
 if hasattr(gc, "threshold"):
     gc.threshold((gc.mem_free() + gc.mem_alloc()) // 4)
 
-# Onboard status LED ("D2", GPIO 2 on most WROOM devkits): solid = WiFi +
-# web server both up; fast blink = WiFi down; slow blink = web server down.
-status_led = None
-if getattr(config, "STATUS_LED_PIN", None) is not None:
+# ---- Onboard status LED ----
+# Two kinds of board, one pin (usually GPIO 2):
+#   * plain LED  - a digital output; blink codes carry the meaning
+#   * WS2812 RGB - needs a timed data protocol, so writing a voltage level
+#     does NOTHING. Colour carries the meaning instead, which is far easier
+#     to read at a glance than counting blinks.
+# config.STATUS_LED_TYPE picks one; "auto" tries RGB and falls back.
+status_led = None       # plain Pin, or None
+status_rgb = None       # NeoPixel, or None
+_rgb_last = None        # last colour written - only write on change
+
+
+def _init_status_led():
+    global status_led, status_rgb
+    pin_num = getattr(config, "STATUS_LED_PIN", None)
+    if pin_num is None:
+        return
+    kind = getattr(config, "STATUS_LED_TYPE", "auto")
+
+    if kind in ("auto", "rgb"):
+        try:
+            import neopixel
+            status_rgb = neopixel.NeoPixel(Pin(pin_num), 1)
+            status_rgb[0] = (0, 0, 0)
+            status_rgb.write()
+            print("Status LED: WS2812 RGB on GPIO", pin_num)
+            return
+        except Exception as e:
+            if kind == "rgb":
+                print("RGB status LED init failed:", e)
+                return
+            # auto: fall through to a plain LED
+
     try:
-        status_led = Pin(config.STATUS_LED_PIN, Pin.OUT, value=0)
+        status_led = Pin(pin_num, Pin.OUT, value=0)
+        print("Status LED: plain LED on GPIO", pin_num)
     except Exception as e:
         print("status LED init failed:", e)
+
+
+try:
+    _init_status_led()
+except Exception as e:
+    print("status LED setup failed:", e)
+
+
+def _rgb_set(colour):
+    """Write a colour only when it changes - a WS2812 write is a bit-banged
+    timing loop, so doing it every ~200ms loop iteration is pure waste."""
+    global _rgb_last
+    if status_rgb is None or colour == _rgb_last:
+        return
+    try:
+        status_rgb[0] = colour
+        status_rgb.write()
+        _rgb_last = colour
+    except Exception:
+        pass  # never let an indicator take down the controller
 
 last_load_calc = time.ticks_ms()
 
@@ -766,13 +862,33 @@ while True:
         if wdt:
             wdt.feed()
 
-    # "CPU load" = fraction of the last ~5s NOT spent idling in select()
-    # status LED: reflects the two things that make the device "reachable".
-    # Non-blocking - blink phase comes from the millisecond clock, and the
-    # loop iterates every ~200ms (select timeout), which bounds blink speed.
+    # Status LED. Non-blocking: the blink phase comes from the millisecond
+    # clock, and the loop iterates every ~200ms (the select timeout), which
+    # bounds how fast it can flash.
     tms = time.ticks_ms()
-    if status_led is not None:
-        if wifi_was_up and web._server_sock is not None:
+    _net_ok = wifi_was_up and web._server_sock is not None
+
+    if status_rgb is not None:
+        # Colour says what's happening - readable at a glance from across a
+        # garden, unlike counting blink rates. Most specific state wins.
+        if state.update_in_progress or state.update_requested:
+            _rgb_set((40, 0, 40))                      # purple: updating
+        elif state.any_valve_open():
+            # breathing blue while water is actually flowing
+            _phase = (tms // 40) % 100
+            _lvl = 10 + (_phase if _phase < 50 else 100 - _phase)
+            _rgb_set((0, 0, _lvl))
+        elif not wifi_was_up:
+            _rgb_set((60, 20, 0) if (tms // 300) % 2 == 0 else (0, 0, 0))  # amber blink
+        elif web._server_sock is None:
+            _rgb_set((60, 0, 0) if (tms // 800) % 2 == 0 else (0, 0, 0))   # red blink
+        elif state.startup_grace_logged and (
+                time.time() - state.boot_time) < getattr(config, "STARTUP_GRACE_SEC", 60):
+            _rgb_set((30, 20, 0))                      # dim amber: settling
+        else:
+            _rgb_set((0, 12, 0))                       # dim green: all good
+    elif status_led is not None:
+        if _net_ok:
             status_led.value(1)  # solid: all good
         else:
             # fast blink (~2.5Hz) = WiFi down; slow (~0.5Hz) = web server down

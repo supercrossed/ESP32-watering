@@ -103,13 +103,21 @@ Sensor calibration takes two minutes and matters:
 
 ## Status LED
 
-The onboard blue "D2" LED tells you where things stand at a glance:
+The onboard LED (GPIO 2) tells you where things stand at a glance. The
+firmware auto-detects which kind your board has.
 
-| LED | Meaning |
+RGB (WS2812) boards - WROOM-32UE and most newer devkits:
+
+| Colour | Meaning |
 |---|---|
-| Solid | WiFi connected, dashboard up |
-| Fast blink | WiFi down, reconnecting |
-| Slow blink | WiFi up, web server down |
+| Dim green | All good |
+| Breathing blue | Watering |
+| Purple | Updating |
+| Amber blink | WiFi down |
+| Red blink | Web server down |
+
+Plain-LED boards: solid = all good, fast blink = WiFi down, slow blink =
+web server down.
 
 ---
 

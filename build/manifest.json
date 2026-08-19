@@ -1,6 +1,6 @@
 {
-    "version":  "2026.08.02.1207",
-    "generated":  "2026-08-02T12:07:45.2472406-04:00",
+    "version":  "2026.08.19.1848",
+    "generated":  "2026-08-19T18:48:54.6909612-04:00",
     "files":  {
                   "web.mpy":  {
                                   "sha256":  "607403c1313fe72be04a7e4981d1ec21796b420c248cb474b38ec61d165ad5ca",
@@ -13,8 +13,8 @@
                                     "path":  "build/valve.mpy"
                                 },
                   "wifi.mpy":  {
-                                   "sha256":  "e66f66a0f13e818fc52ae2d0038ed695573ff9acd48a8c1f53ccaa1cad46fd11",
-                                   "size":  1375,
+                                   "sha256":  "9e7c2338ffd07e6f1046bf52c67f5b72ecdecb74d37195225f15cfd636daa672",
+                                   "size":  1551,
                                    "path":  "build/wifi.mpy"
                                },
                   "state.mpy":  {
@@ -28,8 +28,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "e06babff9744a60b35beac22f70f1838a182fafea1deb137dbade968bd5ee1ee",
-                                  "size":  34114,
+                                  "sha256":  "5c777a2c4c7c3eef49d7acdd8ebcf65030b61fb2919818ced162b4e90c9e126b",
+                                  "size":  38979,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
@@ -53,8 +53,8 @@
                                        "path":  "build/moisture.mpy"
                                    },
                   "wifi_setup.mpy":  {
-                                         "sha256":  "4b1aa180d4b0b3a7835741e04c07e7c73777a1172ec70005f9e2ce2bf3dc7782",
-                                         "size":  5343,
+                                         "sha256":  "79daed04ff2db16722b9bee3403e8f06b6291f95ee8937e3f73e365e08d7e2ac",
+                                         "size":  8374,
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {

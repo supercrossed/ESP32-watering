@@ -5,6 +5,33 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-08-19
+
+### Added: RGB (WS2812) status LED support
+Newer boards - WROOM-32UE and most recent devkits - have a WS2812 RGB LED
+on GPIO 2 rather than the classic plain blue one. A WS2812 needs a timed
+data protocol, so the old code driving that pin as a plain output did
+nothing at all and the LED sat dark.
+
+The firmware now auto-detects which kind is present (`STATUS_LED_TYPE`,
+default `"auto"`; force with `"rgb"` or `"plain"`). Colour carries the
+state, which is far easier to read across a garden than counting blinks:
+dim green = healthy, breathing blue = watering, purple = updating, dim
+amber = settling after boot, amber blink = WiFi down, red blink = web
+server down. Writes only happen on a colour change, so the bit-banged
+WS2812 protocol isn't run every loop iteration.
+
+Plain-LED boards behave exactly as before.
+
+### Documented: `import main` at the REPL breaks networking
+Starting the controller with `import main` in Thonny leaves the ESP-IDF C
+heap exhausted (936 bytes free vs the usual ~138,000), so WiFi associates
+and gets an IP but the device can't allocate enough to answer HTTP -
+`[Errno 116] ETIMEDOUT` on every request. Press EN/RST for a real boot
+instead. Added to troubleshooting.
+
+---
+
 ## 2026-07-25 (later)
 
 ### WiFi credential saves are now verified

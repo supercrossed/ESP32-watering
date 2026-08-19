@@ -4,14 +4,33 @@
 
 ## Status LED
 
-The onboard blue "D2" LED (GPIO 2) is the fastest diagnostic:
+The onboard LED (GPIO 2) is the fastest diagnostic. Boards ship with one
+of two kinds and the firmware auto-detects which.
+
+**RGB (WS2812)** - common on WROOM-32UE and newer devkits:
+
+| Colour | Meaning |
+|---|---|
+| **Dim green** | All good - WiFi and web server up |
+| **Breathing blue** | A valve is open, water is flowing |
+| **Purple** | An OTA update is running |
+| **Dim amber (steady)** | Just booted - watering held while sensors settle |
+| **Amber blink** | WiFi down, reconnecting. Rescue hotspot opens after 5 min |
+| **Red blink** | WiFi up but the web server isn't listening - retries every 30s |
+| **Off** | Not running (crashed at import, or LED disabled) |
+
+**Plain LED** - the classic blue "D2":
 
 | LED | Meaning |
 |---|---|
 | **Solid** | WiFi connected and web server up - all good |
-| **Fast blink** (~2.5Hz) | WiFi down, reconnecting. Rescue hotspot opens after 5 min |
-| **Slow blink** (~0.5Hz) | WiFi up but the web server isn't listening - it retries every 30s |
-| **Off** | Not running (crashed at import, or LED disabled) |
+| **Fast blink** (~2.5Hz) | WiFi down, reconnecting |
+| **Slow blink** (~0.5Hz) | Web server down - it retries every 30s |
+| **Off** | Not running |
+
+If your board has an RGB LED that never lights, force it with
+`STATUS_LED_TYPE = "rgb"` in `src/config.py`. A WS2812 needs a timed data
+protocol, so driving it as a plain on/off output does nothing at all.
 
 ---
 
@@ -50,6 +69,27 @@ After 3 consecutive failures the read interval backs off from 15s to 5
 minutes automatically, and logs an event. This is intentional: each failing
 I2C transaction churns the same memory pool the WiFi stack needs. It
 recovers on the next good read.
+
+---
+
+## `import main` at the REPL breaks networking
+
+Running `import main` in Thonny to start the controller **will not work
+properly**. The REPL session itself consumes the ESP-IDF C heap, so by the
+time the app starts there's nothing left for the network stack:
+
+```
+IDF C-heap free before WiFi: 936 largest block: 512   <- should be ~138000
+...
+web handler error: [Errno 116] ETIMEDOUT
+```
+
+WiFi associates and gets an IP, but the device can't allocate enough to
+answer an HTTP request. **Press the EN/RST button for a real boot instead.**
+
+`import main` is only useful for surfacing import-time errors. If the
+console stays blank after pressing EN, click Thonny's Stop/Restart once to
+re-attach - the board was probably booting fine and you weren't seeing it.
 
 ---
 

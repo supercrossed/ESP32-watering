@@ -100,23 +100,60 @@ def ensure_connected(ssid, password):
     return False
 
 
-def portal_needed(ssid):
+def portal_needed(ssid, had_saved_creds=False):
     """Decide whether a failed boot-time connect should open the captive
-    setup portal. If the target network is VISIBLE but we couldn't join,
-    the password is probably wrong (or this is a fresh kit) -> portal.
-    If it isn't visible, the router is probably just down -> keep running
-    offline and let ensure_connected() retry; watering doesn't need WiFi."""
+    setup portal.
+
+    Rules, in order:
+      * No/placeholder SSID -> portal (fresh kit).
+      * Credentials came from wifi.json, i.e. somebody typed them into the
+        portal and they don't work -> portal. Refusing here strands the
+        device: no network, no hotspot, and the only fix is a USB cable.
+      * Otherwise fall back to visibility: if the target network is on the
+        air but we couldn't join, the password is probably wrong ->
+        portal. If it isn't visible the router is likely just down -> stay
+        offline and let the main loop retry, since watering doesn't need
+        WiFi and a portal would be unreachable in the garden anyway.
+    """
     if not ssid or ssid == "YOUR_WIFI_SSID":
         return True
+
+    # Typed-in credentials that fail are a user error we must let them fix.
+    if had_saved_creds:
+        return True
+
     wlan = network.WLAN(network.STA_IF)
     try:
         wlan.active(True)
-        visible = set()
-        for net in wlan.scan():
+        # Scan a few times: the first scan straight after a failed connect
+        # often comes back empty while the radio is still settling, which
+        # would wrongly look like "router is down".
+        for attempt in range(3):
+            visible = set()
             try:
-                visible.add(net[0].decode())
-            except Exception:
+                for net in wlan.scan():
+                    try:
+                        visible.add(net[0].decode())
+                    except Exception:
+                        pass
+            except OSError:
                 pass
-        return ssid in visible
+            if ssid in visible:
+                return True
+            if visible and attempt >= 1:
+                # we got a real list twice and our network wasn't in it
+                return False
+            time.sleep(1)
+        return False
     except OSError:
+        return False
+
+
+def has_saved_creds():
+    """True if credentials came from wifi.json (someone configured them)
+    rather than from config.py defaults."""
+    try:
+        with open(WIFI_FILE) as f:
+            return bool(json.load(f).get("ssid"))
+    except (OSError, ValueError):
         return False

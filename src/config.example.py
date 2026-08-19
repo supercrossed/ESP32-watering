@@ -83,6 +83,13 @@ UPDATE_BASE_URL = "http://planter-updates.supercrossed.workers.dev/"
 # Slow blink = WiFi up but web server down (retrying every 30s)
 # None disables (frees GPIO 2 for other use).
 STATUS_LED_PIN = 2
+# "auto"  - try a WS2812 RGB first, fall back to a plain LED (default)
+# "rgb"   - force WS2812 (many WROOM-32UE / newer devkits)
+# "plain" - force a simple on/off LED (classic blue "D2")
+# A WS2812 needs a timed data protocol, so driving it as a plain output
+# does nothing at all - which is why the LED stayed dark on boards that
+# have one.
+STATUS_LED_TYPE = "auto"
 
 # Print one console line per HTTP request ("web: GET /api/status").
 # Invaluable when debugging reachability - if the browser is loading the
