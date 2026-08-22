@@ -58,6 +58,10 @@ Where zones are defined:
 | Water for | Run time for this zone |
 | Valves | Which valve(s) this zone opens |
 
+Each zone shows its current calibration and a **Calibrate** button that
+walks through capturing dry and saturated soil readings - see
+[setup.md](setup.md#calibrating-a-moisture-sensor).
+
 Changes apply live - no reboot.
 
 ### Watering Settings

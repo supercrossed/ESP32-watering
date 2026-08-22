@@ -5,6 +5,32 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-08-22
+
+### Added: guided moisture sensor calibration
+**Watering Zones -> Calibrate** walks through the two-point calibration:
+capture the raw reading with the soil at its driest, then again when
+saturated. Each capture averages the probe for 10 seconds (a single
+capacitive reading wanders by a few percent) and reports the spread, so a
+probe that hasn't settled is visible rather than silently baked in. Points
+save individually, so dry and wet can be captured days apart.
+
+The dialog also flags a backwards calibration (dry must read higher than
+wet) and a suspiciously narrow range, and accepts raw values typed by hand.
+
+New endpoints `POST`/`GET /api/calibrate`. Like the OTA check, the capture
+runs in the main loop rather than the HTTP handler - 10 seconds of blocking
+there would freeze the web server and valve timing.
+
+### Fixed: calibration was unreachable for UI-added zones
+Calibration lived only in `config.ZONES`, so any zone created through the
+dashboard silently used hardcoded defaults with no way to correct them. It
+is now `hardware.zone_calibration` in `settings.json` - real runtime state,
+like every other per-zone setting - and is preserved when a zone is renamed
+or edited.
+
+---
+
 ## 2026-08-19
 
 ### Added: RGB (WS2812) status LED support

@@ -331,6 +331,70 @@ def check_daily_schedule():
             break  # one schedule at a time; others will be caught next minute
 
 
+def sample_zone_raw(zone_name, seconds=10, wdt_ref=None):
+    """Average the raw ADC for one zone over `seconds`, for calibration.
+
+    A single reading from a capacitive probe wanders by a few percent, so
+    both calibration endpoints are averaged. Also reports the spread, which
+    is how the UI can tell the user their probe hasn't settled yet.
+
+    Returns {"raw", "samples", "min", "max", "spread"} or {"error": ...}.
+    Blocks for `seconds` - the caller runs it from the main loop, not from
+    an HTTP handler, and feeds the watchdog."""
+    hw = settings_store.get()["hardware"]
+    zones = [z for z in build_zone_list(hw) if z["name"] == zone_name]
+    if not zones:
+        return {"error": "unknown zone: " + str(zone_name)}
+    zone = zones[0]
+    ch = zone["channel"]
+    board = ch // 4
+    if board >= len(ads_boards):
+        return {"error": "channel {} has no ADS1115 board".format(ch)}
+
+    readings = []
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            readings.append(ads_boards[board].read(ch % 4))
+        except Exception as e:
+            return {"error": "sensor read failed: {}".format(e)}
+        if wdt_ref:
+            wdt_ref.feed()
+        time.sleep(0.25)
+
+    if not readings:
+        return {"error": "no readings captured"}
+    lo, hi = min(readings), max(readings)
+    return {
+        "raw": int(sum(readings) / len(readings)),
+        "samples": len(readings),
+        "min": lo,
+        "max": hi,
+        "spread": hi - lo,
+    }
+
+
+def build_zone_list(hw):
+    """Every configured zone as {name, channel, dry_raw, wet_raw,
+    threshold_percent}, ready for moisture.read_all().
+
+    Shared by the moisture loop and the calibration endpoint so both read a
+    zone the same way."""
+    zone_channels = hw.get("zone_channels", {})
+    calib = hw.get("zone_calibration", {})
+    zones = []
+    for name, channel in zone_channels.items():
+        c = calib.get(name) or {}
+        zones.append({
+            "name": name,
+            "channel": channel,
+            "dry_raw": c.get("dry_raw", settings_store.DEFAULT_DRY_RAW),
+            "wet_raw": c.get("wet_raw", settings_store.DEFAULT_WET_RAW),
+            "threshold_percent": 30,
+        })
+    return zones
+
+
 def check_moisture_and_water():
     global _soak_session
     settings = settings_store.get()
@@ -339,28 +403,10 @@ def check_moisture_and_water():
     zone_valves = hw.get("zone_valves", {})
 
     # zone_channels is authoritative for which zones exist (zones can be
-    # renamed/removed via the web UI). config.ZONES only contributes
-    # calibration for names that still match; any web-UI-added zone gets
-    # default calibration so it actually gets read.
-    known_names = {z["name"] for z in config.ZONES}
-    zones = []
-    for z in config.ZONES:
-        if z["name"] not in zone_channels:
-            continue  # renamed or removed via the web UI
-        z = dict(z)
-        z["channel"] = zone_channels[z["name"]]
-        zones.append(z)
-    for name, channel in zone_channels.items():
-        if name not in known_names:
-            zones.append(
-                {
-                    "name": name,
-                    "channel": channel,
-                    "dry_raw": 17500,
-                    "wet_raw": 8000,
-                    "threshold_percent": 30,
-                }
-            )
+    # renamed/removed via the web UI) and zone_calibration holds each one's
+    # dry/wet endpoints - both live in settings, so a zone added or
+    # calibrated through the dashboard behaves exactly like a config.py one.
+    zones = build_zone_list(hw)
 
     readings = read_moisture(ads_boards, zones, settings["zone_thresholds"])
     state.log_moisture(readings)
@@ -820,6 +866,41 @@ while True:
         web.poll_once(timeout=0.2)
     except Exception as e:
         print("web poll error:", e)
+
+    # Dashboard-requested sensor calibration. Like the update check below,
+    # this runs in the loop rather than the HTTP handler - averaging a probe
+    # takes ~10s and would otherwise freeze the web server and valve timing.
+    if state.calibration_requested:
+        _cal = state.calibration_requested
+        state.calibration_requested = None
+        state.calibration_busy = True
+        try:
+            if wdt:
+                wdt.feed()
+            _r = sample_zone_raw(_cal["zone"], _cal.get("seconds", 10), wdt)
+            _r["zone"] = _cal["zone"]
+            _r["point"] = _cal["point"]
+            if "error" not in _r:
+                # persist straight away: the user is standing there with the
+                # probe in the soil, and a reboot shouldn't lose the capture
+                _hw = settings_store.get()["hardware"]
+                _cals = _hw.setdefault("zone_calibration", {})
+                _entry = _cals.setdefault(_cal["zone"], {})
+                _entry["dry_raw" if _cal["point"] == "dry" else "wet_raw"] = _r["raw"]
+                settings_store.save()
+                state.log_event(
+                    "calibration",
+                    "{} {} point = {} (spread {})".format(
+                        _cal["zone"], _cal["point"], _r["raw"], _r["spread"]))
+            state.calibration_result = _r
+            print("calibration:", _r)
+        except Exception as e:
+            state.calibration_result = {"error": str(e), "zone": _cal.get("zone")}
+            print("calibration error:", e)
+        finally:
+            state.calibration_busy = False
+            if wdt:
+                wdt.feed()
 
     # Dashboard-requested update check/apply. Runs HERE, not in the HTTP
     # handler: a TLS handshake can block for many seconds (or indefinitely

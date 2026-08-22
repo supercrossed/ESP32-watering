@@ -311,6 +311,39 @@ def _handle(cl):
             state.log_event("reboot", "wifi credentials changed to " + ssid)
             time.sleep(1)
             machine.reset()
+    elif path == "/api/calibrate" and method == "POST":
+        # Queue a calibration capture. Averaging the probe takes ~10s, so
+        # the main loop does it (see the update endpoints below for the
+        # same reasoning) and the dashboard polls /api/calibrate for the
+        # result.
+        try:
+            incoming = json.loads(body)
+            zone = str(incoming.get("zone", "")).strip()
+            point = str(incoming.get("point", "")).strip()
+        except Exception:
+            zone, point = "", ""
+        hw = settings_store.get()["hardware"]
+        if point not in ("dry", "wet"):
+            _send(cl, 400, "application/json",
+                  json.dumps({"ok": False, "error": "point must be 'dry' or 'wet'"}))
+        elif zone not in hw.get("zone_channels", {}):
+            _send(cl, 400, "application/json",
+                  json.dumps({"ok": False, "error": "unknown zone: " + zone}))
+        elif state.calibration_busy or state.calibration_requested:
+            _send(cl, 200, "application/json",
+                  json.dumps({"ok": True, "queued": False,
+                              "error": "a calibration is already running"}))
+        else:
+            state.calibration_result = None
+            state.calibration_requested = {"zone": zone, "point": point, "seconds": 10}
+            _send(cl, 200, "application/json",
+                  json.dumps({"ok": True, "queued": True, "seconds": 10}))
+    elif path == "/api/calibrate" and method == "GET":
+        _send(cl, 200, "application/json", json.dumps({
+            "busy": state.calibration_busy or bool(state.calibration_requested),
+            "result": state.calibration_result,
+            "calibration": settings_store.get()["hardware"].get("zone_calibration", {}),
+        }))
     elif path in ("/api/update/check", "/api/update/apply") and method == "POST":
         # NEVER do the network work here. A TLS handshake on MicroPython
         # can block indefinitely - wrap_socket() performs the handshake
@@ -948,6 +981,7 @@ def _zones_payload():
     thresholds = settings.get("zone_thresholds", {})
     durations = settings.get("zone_durations", {})
     wet_targets = settings.get("zone_wet_targets", {})
+    cal = hw.get("zone_calibration", {})
     default_duration = settings.get("supplemental_duration_sec", 60)
     zones = []
     for name, ch in hw.get("zone_channels", {}).items():
@@ -960,6 +994,8 @@ def _zones_payload():
                 "threshold": threshold,
                 "wet_target": wet_targets.get(name, min(100, threshold + 10)),
                 "water_duration_sec": durations.get(name, default_duration),
+                "dry_raw": cal.get(name, {}).get("dry_raw", settings_store.DEFAULT_DRY_RAW),
+                "wet_raw": cal.get(name, {}).get("wet_raw", settings_store.DEFAULT_WET_RAW),
             }
         )
     zones.sort(key=lambda z: z["channel"])
@@ -984,6 +1020,13 @@ def _apply_zones_patch(body):
     thresholds = {}
     durations = {}
     wet_targets = {}
+    # Calibration must SURVIVE a zone edit. This function rebuilds the zone
+    # maps wholesale, so without carrying it forward a user would lose their
+    # captured dry/wet points just by renaming a zone or nudging a
+    # threshold. Keyed by the zone's CURRENT name; a rename is handled by
+    # the incoming entry carrying its own values.
+    old_calib = hw.get("zone_calibration", {})
+    calibration = {}
     used_channels = set()
     # global channels: 4 per ADS1115 board (board 1 = 0-3, board 2 = 4-7...)
     max_channel = 4 * len(hw.get("ads1115_addresses", [0])) - 1
@@ -1018,8 +1061,27 @@ def _apply_zones_patch(body):
             w = thresholds[name] + 10
         wet_targets[name] = min(100, max(thresholds[name], w))
 
+        # explicit values win (manual entry / a rename carrying its own),
+        # otherwise keep whatever this zone already had
+        prev = old_calib.get(name, {})
+        try:
+            dry_raw = int(z["dry_raw"]) if z.get("dry_raw") is not None else None
+        except (TypeError, ValueError):
+            dry_raw = None
+        try:
+            wet_raw = int(z["wet_raw"]) if z.get("wet_raw") is not None else None
+        except (TypeError, ValueError):
+            wet_raw = None
+        calibration[name] = {
+            "dry_raw": dry_raw if dry_raw is not None
+            else prev.get("dry_raw", settings_store.DEFAULT_DRY_RAW),
+            "wet_raw": wet_raw if wet_raw is not None
+            else prev.get("wet_raw", settings_store.DEFAULT_WET_RAW),
+        }
+
     hw["zone_channels"] = zone_channels
     hw["zone_valves"] = zone_valves
+    hw["zone_calibration"] = calibration
     settings_store.update(
         {
             "hardware": hw,

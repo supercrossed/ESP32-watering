@@ -1,10 +1,10 @@
 {
-    "version":  "2026.08.19.1848",
-    "generated":  "2026-08-19T18:48:54.6909612-04:00",
+    "version":  "2026.08.22.1138",
+    "generated":  "2026-08-22T11:38:34.1177769-04:00",
     "files":  {
                   "web.mpy":  {
-                                  "sha256":  "607403c1313fe72be04a7e4981d1ec21796b420c248cb474b38ec61d165ad5ca",
-                                  "size":  15096,
+                                  "sha256":  "9fed8822803a642b21da2a6606cc5d36914be701ab2eeb515b9c2f61828f8341",
+                                  "size":  16096,
                                   "path":  "build/web.mpy"
                               },
                   "valve.mpy":  {
@@ -18,8 +18,8 @@
                                    "path":  "build/wifi.mpy"
                                },
                   "state.mpy":  {
-                                    "sha256":  "8d120971084b194b75cf1062f5bb548265479f851ea63ad1c15b0dc193ad7182",
-                                    "size":  2256,
+                                    "sha256":  "5cbd29b1fdcc349746eb524d9a8d3089c4a048bcac529f19402e291b838cfdce",
+                                    "size":  2330,
                                     "path":  "build/state.mpy"
                                 },
                   "env_sensors.mpy":  {
@@ -28,8 +28,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "5c777a2c4c7c3eef49d7acdd8ebcf65030b61fb2919818ced162b4e90c9e126b",
-                                  "size":  38979,
+                                  "sha256":  "b0846f72ac0796276a71b95834ba9602f7fd663432f3e5f3083b417462872519",
+                                  "size":  42297,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
@@ -43,8 +43,8 @@
                                   "path":  "build/boot.py"
                               },
                   "settings_store.mpy":  {
-                                             "sha256":  "183c265e6c90c33233ca3832fa6dc1971a3bab5dbbe46a3582b95f5fc36b6b5f",
-                                             "size":  2235,
+                                             "sha256":  "a9b998915fa7be14594d6f70b3bc412232abca06a59c3675f9edbde584155910",
+                                             "size":  2534,
                                              "path":  "build/settings_store.mpy"
                                          },
                   "moisture.mpy":  {
@@ -58,8 +58,8 @@
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {
-                                     "sha256":  "86b6558d07776d45bd159c44900bfc08613957b4cb35169c7d366b4b4eab9c89",
-                                     "size":  91983,
+                                     "sha256":  "bb49bf791f8a8b4752d901150c6bd726fd1c44ff3bf409e4bd7f0679cec5e790",
+                                     "size":  99203,
                                      "path":  "build/index.html"
                                  },
                   "ads1x15.mpy":  {

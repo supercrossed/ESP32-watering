@@ -7,6 +7,12 @@ import ujson as json
 
 SETTINGS_FILE = "settings.json"
 
+# Fallback calibration for a zone that has never been calibrated. Sane for
+# typical capacitive probes (AITRIP and similar), but every sensor differs -
+# the dashboard's Calibrate button captures real values per zone.
+DEFAULT_DRY_RAW = 17500
+DEFAULT_WET_RAW = 8000
+
 _settings = None
 
 
@@ -29,6 +35,10 @@ def load(config):
             "valves": [dict(v) for v in config.VALVES],
             "zone_channels": {z["name"]: z["channel"] for z in config.ZONES},
             "zone_valves": {z["name"]: [z.get("valve", config.VALVES[0]["name"])] for z in config.ZONES},
+            "zone_calibration": {
+                z["name"]: {"dry_raw": z["dry_raw"], "wet_raw": z["wet_raw"]}
+                for z in config.ZONES
+            },
             "flow_meter_pins": [],
             "rain_sensor_pin": None,
         }
@@ -45,6 +55,29 @@ def load(config):
             }
         ]
         hardware["zone_valves"] = {name: ["valve1"] for name in hardware.get("zone_channels", {})}
+
+    # ---- Per-zone calibration ----
+    # Calibration used to live only in config.ZONES, so a zone added through
+    # the web UI got hardcoded defaults with no way to correct them. It's now
+    # runtime state like every other per-zone setting. Seed from config.ZONES
+    # for zones that came from there, defaults for the rest.
+    calib = hardware.get("zone_calibration")
+    if calib is None:
+        calib = {}
+        hardware["zone_calibration"] = calib
+    _config_cal = {}
+    try:
+        _config_cal = {z["name"]: z for z in config.ZONES}
+    except (AttributeError, TypeError, KeyError):
+        pass
+    for zone_name in hardware.get("zone_channels", {}):
+        if zone_name in calib:
+            continue
+        src = _config_cal.get(zone_name)
+        calib[zone_name] = {
+            "dry_raw": src["dry_raw"] if src else DEFAULT_DRY_RAW,
+            "wet_raw": src["wet_raw"] if src else DEFAULT_WET_RAW,
+        }
 
     # ---- ADS1115: single-address -> list-of-addresses migration ----
     # Multiple boards share the one I2C bus, each at its own address.

@@ -116,6 +116,14 @@ update_in_progress = False  # blocks watering triggers while files are swapping
 update_requested = None     # None | "check" | "apply"
 update_last_result = None   # short human-readable outcome for the dashboard
 
+# ---- Sensor calibration (see main.sample_zone_raw) ----
+# Averaging a probe takes ~10s, far too long for an HTTP handler, so the
+# dashboard queues a request here and the main loop performs it - same
+# pattern as the OTA check.
+calibration_requested = None   # None | {"zone": name, "point": "dry"|"wet"}
+calibration_busy = False
+calibration_result = None      # last capture, for the dashboard to display
+
 _events = []
 _moisture_history = []
 

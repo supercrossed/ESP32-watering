@@ -110,18 +110,53 @@ and confirm it stops. Do this before leaving the planter unattended.
 
 ## Calibrating a moisture sensor
 
-Raw ADC readings become a percentage from two calibration points. The
-defaults (`dry_raw=17500`, `wet_raw=8000`) suit typical AITRIP sensors, but
-sensors vary - **calibrate each one individually**, don't assume they share a
-curve.
+Raw ADC readings become a percentage from two calibration points. Every
+sensor differs, and so does every soil mix - **calibrate each zone
+individually**, don't assume they share a curve.
 
-1. **Dry reading.** Hold the sensor in open air, completely dry. Note the
-   `raw` value in the Moisture Readings card. That's `dry_raw`.
-2. **Wet reading.** Put it in a glass of water, up to but **not past** the
-   marked line. Note the raw value. That's `wet_raw`.
-3. Enter both in the zone editor.
+The dashboard walks you through it: **Watering Zones -> Calibrate** on the
+zone you want. Each capture averages the probe for 10 seconds, because a
+single reading from a capacitive sensor wanders by a few percent.
 
-Higher raw = drier (capacitive sensors read higher capacitance when dry).
+### 1. Dry soil
+
+With the probe in its normal spot, wait until the pot is **as dry as you
+would ever let it get** - just before you would normally water. Press
+**Capture dry**.
+
+### 2. Saturated soil
+
+Water the pot thoroughly, wait a few minutes for it to soak through, then
+press **Capture saturated** with the probe in the same position.
+
+Each point saves to the planter the moment it is captured, so the two can
+happen days apart - dry today, wet after you next water.
+
+### Reading the result
+
+| What you see | What it means |
+|---|---|
+| Dry higher than wet | Correct. These sensors output less as moisture rises |
+| **"looks backwards"** | The two points were swapped - recapture |
+| Spread over ~400 | The probe hadn't settled; recapture |
+| Range under ~2000 counts | Narrow - readings will be jumpy. Check the probe is fully inserted |
+
+### Soil vs. air-and-water
+
+Calibrating against **soil** means 0% is "as dry as this pot gets" and 100%
+is "saturated", so a 30% threshold describes something real about your
+plant's conditions.
+
+Calibrating against air and a glass of water is faster and gives a wider
+range, but real soil never reaches either endpoint - readings then cluster
+in the middle and thresholds are harder to reason about. You can still do
+it that way by entering raw values by hand in the Calibrate dialog.
+
+### Entering values manually
+
+The Calibrate dialog has fields for typing raw dry/wet values directly -
+useful for copying a known-good calibration onto a replacement sensor, or
+for restoring one from a config backup.
 
 ### Choosing a threshold
 

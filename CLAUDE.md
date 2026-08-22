@@ -78,7 +78,14 @@ available.
   An optional LM393 rain sensor DO pin (`hardware["rain_sensor_pin"]`,
   assignable in the pin map, input-only pins OK, LOW = wet) rides along in
   the same `state.env` dict. Display-only for now (rain-skip is roadmap).
-- `moisture.py` — raw ADC → percent via two-point calibration.
+- `moisture.py` — raw ADC → percent via two-point calibration. Calibration
+  lives in `hardware["zone_calibration"]` (name → {dry_raw, wet_raw}), not
+  in config.ZONES — it's runtime state, captured via the dashboard's
+  Calibrate button. `main.build_zone_list()` assembles zones from
+  zone_channels + zone_calibration for both the moisture loop and the
+  calibration endpoint. `main.sample_zone_raw()` averages a probe for ~10s
+  and reports the spread; it runs in the MAIN LOOP (queued via
+  `state.calibration_requested`), never in an HTTP handler.
 - `valve.py` — solenoid control via IRF520 MOSFET gate pin, plus a hard
   safety cutoff (`MAX_VALVE_OPEN_SEC`) checked every loop. Multiple `Valve`
   instances exist (one per `hardware.valves` entry), each keyed by name in
@@ -100,12 +107,20 @@ available.
   redirects unknown non-API paths to "/" so captive probes land there, and
   the dashboard's WiFi card can change creds via POST /api/wifi). Closes
   itself when the real network returns. Imported lazily (RAM).
-  **AP startup order is load-bearing**: `_start_ap()` deactivates,
-  configures (ssid + `password=""` + AUTH_OPEN together — authmode alone
-  can leave a keyless WPA2 AP), THEN activates. Config applied to an
-  already-active AP restarts it without reliably restarting its DHCP
-  server, so phones associate but get no lease ("Unable to join network"
-  on iOS). AP and STA share ONE radio, so `start_rescue_ap()` parks the
+  **AP startup order is load-bearing**, and two firmware behaviours pull
+  opposite ways: MicroPython 1.28 raises `OSError: Wifi Invalid Mode` if
+  `ap.config()` is called while the interface is INACTIVE, but applying
+  config to an already-running AP restarts it without reliably restarting
+  its DHCP server (phones associate, get no lease, iOS says "Unable to
+  join network"). `_start_ap()` therefore: deactivate → **activate** →
+  configure (ssid + `password=""` + AUTH_OPEN together; authmode alone can
+  leave a keyless WPA2 AP) → **bounce** the interface so DHCP restarts
+  against the final config. `_ap_config()` swallows OSError too, and the
+  boot portal call in main.py is wrapped so a failed AP falls through to
+  offline operation rather than dropping to the REPL.
+  Captive-portal probes (`/hotspot-detect.html`, `/generate_204`,
+  `/ncsi.txt`) must get a **302**, not a 200 with the page — iOS treats an
+  unexpected 200 as a broken network and drops the association. AP and STA share ONE radio, so `start_rescue_ap()` parks the
   station (a scanning STA drags the AP off-channel mid-handshake) and
   `poll_rescue(creds)` owns router-return retries at
   `RESCUE_STA_RETRY_SEC` (120s); main.py only observes while rescue is up.
@@ -261,6 +276,8 @@ POST /api/valves         (JSON {valves:[...], renames:{old:new}, flow_meter_pins
                           zones + schedules; standalone flow-meter pins ride along
                           so a meter can move valve<->standalone in one save)
 GET  /api/i2c/scan       live bus scan -> {found:[addr,...]} (ADS1115 = 0x48-0x4B)
+POST /api/calibrate      {zone,point:"dry"|"wet"} queue a 10s averaged capture
+GET  /api/calibrate      {busy, result, calibration} - poll for the outcome
 GET  /api/config/export  full config as a downloadable JSON file (no WiFi creds)
 POST /api/config/import  restore/preset a config file, validates then reboots
 GET  /api/wifi           saved SSID + connection state (never the password)

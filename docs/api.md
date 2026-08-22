@@ -76,11 +76,14 @@ Full-replacement list. Each entry:
 
 ### `GET /api/zones` &nbsp;&middot;&nbsp; `POST /api/zones`
 Full replacement, applied **live** (no reboot). Renaming a zone rewrites its
-key in `zone_channels`, `zone_valves`, and `zone_thresholds` atomically.
+key in `zone_channels`, `zone_valves`, `zone_thresholds`, and
+`zone_calibration` atomically. Omitting `dry_raw`/`wet_raw` keeps whatever
+the zone already had, so editing a threshold never discards a calibration.
 
 ```json
 {"zones": [{"name": "bed1", "channel": 0, "valves": ["valve1"],
-            "threshold": 30, "wet_target": 45, "water_duration_sec": 60}]}
+            "threshold": 30, "wet_target": 45, "water_duration_sec": 60,
+            "dry_raw": 16240, "wet_raw": 7100}]}
 ```
 
 ### `GET /api/valves` &nbsp;&middot;&nbsp; `POST /api/valves`
@@ -100,6 +103,24 @@ I2C pins, ADS1115 addresses, rain sensor pin. **Triggers a reboot.**
 ### `GET /api/pinmap`
 Every GPIO 0-39 with its assigned role and safety flags (flash, serial,
 strapping, input-only), plus ADS1115 channel assignments.
+
+### `POST /api/calibrate` &nbsp;&middot;&nbsp; `GET /api/calibrate`
+POST `{"zone": "bed1", "point": "dry"|"wet"}` queues a calibration capture.
+The device averages that zone's raw ADC for ~10s **in the main loop** (not
+in the handler - it would freeze the web server and valve timing) and saves
+the point as soon as it lands.
+
+GET returns `{busy, result, calibration}` - poll it for the outcome:
+
+```json
+{"busy": false,
+ "result": {"raw": 16240, "samples": 40, "min": 16180, "max": 16310,
+            "spread": 130, "zone": "bed1", "point": "dry"},
+ "calibration": {"bed1": {"dry_raw": 16240, "wet_raw": 7100}}}
+```
+
+A `spread` over ~400 means the probe hadn't settled. See
+[setup.md](setup.md#calibrating-a-moisture-sensor).
 
 ### `GET /api/i2c/scan`
 Live bus scan: `{"found": [72, 73]}` (decimal; 0x48 = 72).

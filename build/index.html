@@ -529,6 +529,45 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
   </div>
 </div>
 
+<div id="cal-modal" class="modal-backdrop" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="row"><strong>Calibrate <span id="cal-zone">-</span></strong><span class="clear-btn" onclick="closeCalibrate()">X close</span></div>
+    <p class="small">Two readings map this sensor's raw output onto 0-100%. Take
+    each one with the probe in the soil at that condition - the planter averages
+    for 10 seconds to smooth out the noise these sensors produce.</p>
+
+    <div class="set-row" style="border-bottom:1px dashed var(--line-2)">
+      <span class="k"><b>1. Dry soil</b><span class="small">Probe in the pot when the
+      soil is as dry as you would ever let it get - just before you would normally water.</span></span>
+      <span id="cal-dry-val" style="text-align:right">-</span>
+      <span class="unit"></span>
+    </div>
+    <div style="margin:6px 0 14px"><button id="cal-dry-btn" onclick="captureCal('dry')">Capture dry</button></div>
+
+    <div class="set-row" style="border-bottom:1px dashed var(--line-2)">
+      <span class="k"><b>2. Saturated soil</b><span class="small">Water the pot
+      thoroughly, wait a few minutes for it to soak through, then capture with the
+      probe in the same spot.</span></span>
+      <span id="cal-wet-val" style="text-align:right">-</span>
+      <span class="unit"></span>
+    </div>
+    <div style="margin:6px 0 14px"><button id="cal-wet-btn" onclick="captureCal('wet')">Capture saturated</button></div>
+
+    <div id="cal-status" class="small" style="min-height:1.2em"></div>
+    <div id="cal-preview" class="small" style="margin-top:6px"></div>
+
+    <p class="small" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+    Or enter raw values by hand:
+    <span style="display:inline-flex;gap:8px;align-items:center;margin-top:6px">
+      dry <input id="cal-dry-manual" type="number" style="width:90px">
+      wet <input id="cal-wet-manual" type="number" style="width:90px">
+      <button onclick="saveManualCal()">Save</button>
+    </span></p>
+    <p class="small">Both points are saved to the planter as soon as they are
+    captured - you can do the dry reading today and the wet one after you next water.</p>
+  </div>
+</div>
+
 <div id="time-modal" class="modal-backdrop" style="display:none">
   <div class="modal" style="max-width:340px">
     <div class="row"><strong>Set Time</strong><span class="clear-btn" onclick="closeTimePicker()">X close</span></div>
@@ -1364,6 +1403,11 @@ function renderZones() {
       </div>
       <div class="sched-valves">Opens: ${valveChecks || '<span class="small">no valves configured - add one in the GPIO Pin Map</span>'}</div>
       <div class="chain-row" id="zone-chain-${i}">${zoneChainHtml(z)}</div>
+      <div class="small" style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span>Calibration: dry ${z.dry_raw} &middot; wet ${z.wet_raw}
+          ${z.dry_raw <= z.wet_raw ? '<b style="color:var(--red-text)"> - looks backwards</b>' : ''}</span>
+        <button onclick="openCalibrate(${i})">Calibrate</button>
+      </div>
     `;
     div.appendChild(card);
   });
@@ -1398,6 +1442,8 @@ function addZone() {
     valves: valveConfig.length ? [valveConfig[0].name] : [],
     threshold: 30,
     wet_target: 40,
+    dry_raw: 17500,
+    wet_raw: 8000,
     water_duration_sec: 60,
   });
   renderZones();
@@ -1811,6 +1857,124 @@ dropzone.addEventListener('drop', (e) => {
   dropzone.style.background = '';
   uploadFiles(e.dataTransfer.files);
 });
+
+// ---------- Sensor calibration ----------
+// Two-point calibration against real soil: capture the raw ADC value when
+// the pot is at its driest and again when saturated. The device averages
+// over 10s (a single capacitive reading wanders by a few percent) and
+// saves each point as soon as it lands, so the dry and wet captures can
+// happen days apart.
+let calZoneIndex = null;
+
+function openCalibrate(i) {
+  calZoneIndex = i;
+  const z = zonesConfig[i];
+  document.getElementById('cal-zone').textContent = z.name;
+  document.getElementById('cal-dry-val').textContent = z.dry_raw;
+  document.getElementById('cal-wet-val').textContent = z.wet_raw;
+  document.getElementById('cal-dry-manual').value = z.dry_raw;
+  document.getElementById('cal-wet-manual').value = z.wet_raw;
+  document.getElementById('cal-status').textContent = '';
+  updateCalPreview();
+  document.getElementById('cal-modal').style.display = 'flex';
+}
+
+function closeCalibrate() {
+  document.getElementById('cal-modal').style.display = 'none';
+  calZoneIndex = null;
+  renderZones();
+}
+
+function updateCalPreview() {
+  const el = document.getElementById('cal-preview');
+  if (calZoneIndex === null) { el.textContent = ''; return; }
+  const z = zonesConfig[calZoneIndex];
+  if (z.dry_raw <= z.wet_raw) {
+    el.innerHTML = '<b style="color:var(--red-text)">Dry must read HIGHER than wet.</b>' +
+      ' These sensors output a lower voltage as moisture rises, so a dry reading' +
+      ' below the wet one means the two were swapped.';
+    return;
+  }
+  const span = z.dry_raw - z.wet_raw;
+  el.textContent = 'Range: ' + span + ' counts.' +
+    (span < 2000 ? ' That is quite narrow - readings will be jumpy. Check the probe is fully inserted.' : ' Good spread.');
+}
+
+async function captureCal(point) {
+  if (calZoneIndex === null) return;
+  const z = zonesConfig[calZoneIndex];
+  const status = document.getElementById('cal-status');
+  const btn = document.getElementById('cal-' + point + '-btn');
+  btn.disabled = true;
+  status.textContent = 'Averaging for 10 seconds - keep the probe still...';
+  try {
+    const r = await fetch('/api/calibrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zone: z.name, point }),
+    });
+    const j = await r.json();
+    if (!j.ok || j.queued === false) {
+      status.textContent = j.error || 'Could not start.';
+      btn.disabled = false;
+      return;
+    }
+    pollCal(point, btn, status);
+  } catch (e) {
+    status.textContent = 'Failed: ' + e;
+    btn.disabled = false;
+  }
+}
+
+// The capture runs in the device's main loop, so poll for the outcome
+// rather than holding the request open for 10 seconds.
+function pollCal(point, btn, status) {
+  let tries = 0;
+  const t = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch('/api/calibrate', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.busy && j.result) {
+        clearInterval(t);
+        btn.disabled = false;
+        const res = j.result;
+        if (res.error) {
+          status.textContent = 'Failed: ' + res.error;
+          return;
+        }
+        const z = zonesConfig[calZoneIndex];
+        if (point === 'dry') z.dry_raw = res.raw; else z.wet_raw = res.raw;
+        document.getElementById('cal-' + point + '-val').textContent = res.raw;
+        document.getElementById('cal-' + point + '-manual').value = res.raw;
+        // A wide spread means the probe had not settled - worth saying so,
+        // since it is the difference between a good calibration and a bad one.
+        status.textContent = 'Captured ' + res.raw + ' (' + res.samples + ' samples, spread ' +
+          res.spread + ')' + (res.spread > 400 ? ' - readings were still drifting, consider recapturing.' : '');
+        updateCalPreview();
+        return;
+      }
+      status.textContent = 'Averaging... (' + (tries * 2) + 's)';
+    } catch (e) { /* device busy sampling */ }
+    if (tries > 15) {
+      clearInterval(t);
+      btn.disabled = false;
+      status.textContent = 'No response - check the serial console.';
+    }
+  }, 2000);
+}
+
+async function saveManualCal() {
+  if (calZoneIndex === null) return;
+  const z = zonesConfig[calZoneIndex];
+  z.dry_raw = +document.getElementById('cal-dry-manual').value;
+  z.wet_raw = +document.getElementById('cal-wet-manual').value;
+  document.getElementById('cal-dry-val').textContent = z.dry_raw;
+  document.getElementById('cal-wet-val').textContent = z.wet_raw;
+  updateCalPreview();
+  await saveZones();
+  document.getElementById('cal-status').textContent = 'Saved.';
+}
 
 async function rebootDevice() {
   if (!confirm('Reboot the ESP32 now?')) return;
