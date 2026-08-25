@@ -39,8 +39,14 @@ Per valve: open/close toggle, a 30-second quick-water button, and a master
 "water all" that runs every valve in sequence.
 
 ### Moisture Readings / Moisture History
-Live values per zone, and a 3-hour chart (one point per minute, 180 points).
-Hover for exact values.
+Live values per zone, plus a chart with **3h / 24h / 7d** range buttons.
+
+- **3h** - one reading per minute, held in RAM. Finest detail, resets on reboot.
+- **24h / 7d** - one reading per 15 minutes, saved to flash. **Survives
+  reboots**, including the nightly maintenance reboot.
+
+Hover for exact values. Saved history is kept for 7 days and purged
+automatically.
 
 ### Environment
 Temperature, humidity, pressure, and rain-sensor state - shown only if those

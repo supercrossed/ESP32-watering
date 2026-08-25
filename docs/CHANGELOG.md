@@ -5,6 +5,36 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-08-24
+
+### Added: moisture history survives reboots
+The chart previously lived only in RAM, so every reboot - including the
+new nightly maintenance one - wiped it. History is now also written to
+`history.csv` on flash: one point per 15 minutes, kept for 7 days,
+~21KB for two zones.
+
+The Moisture History card gains **3h / 24h / 7d** buttons. 3h still serves
+the live 1/minute RAM buffer (finest detail, resets on reboot); 24h and 7d
+stream from flash and persist.
+
+A week at one point per *minute* would have been ~10,000 dicts - several
+times the entire heap, and memory exhaustion has twice taken this device's
+network down. Hence flash, compact CSV, appended one short line at a time
+and never read into RAM as a whole.
+
+Old lines are purged roughly once a day, along with any torn by a power cut
+mid-append. Nothing is written before NTP sync, since 2000-epoch timestamps
+would sort before all real data.
+
+New: `GET /api/history?hours=N`.
+
+### Enabled: nightly maintenance reboot at midnight
+`DAILY_REBOOT_HOUR = 0`. Guards were already in place and are unchanged: it
+skips if a valve is open or queued, if the clock isn't NTP-synced, or if the
+board has been up less than an hour (so a reboot can't become a loop).
+
+---
+
 ## 2026-08-22
 
 ### Added: guided moisture sensor calibration

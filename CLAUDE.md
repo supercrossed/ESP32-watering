@@ -259,7 +259,8 @@ alone in the UI does nothing without this.
 ```
 GET  /api/status         moisture + per-valve state (lean - polled every 5s;
                           settings deliberately NOT included, use /api/settings)
-GET  /api/history        moisture readings over time
+GET  /api/history        live 3h buffer (RAM, 1/min, lost on reboot)
+GET  /api/history?hours=N saved history (flash, 1/15min, 7-day, persists)
 GET  /api/events         recent event log
 POST /api/valve?state=open|close&valve=NAME
 POST /api/water/trigger?duration=N&valve=NAME
@@ -318,6 +319,13 @@ block and checked with `node --check`.
   `gc.threshold()` for mid-handler collection.
 - History decimated to 1 point/min, 180 points max, slim shape; /api/history
   and index.html and uploads all streamed (no large contiguous allocations).
+- Long-term history is on FLASH, not RAM (`state.HISTORY_FILE`,
+  `history.csv`): one CSV line per 15 min, 7-day retention, ~21KB for two
+  zones, purged (with torn lines) roughly once a day. A week at 1/min would
+  be ~10k dicts, several times the heap. `GET /api/history?hours=N` streams
+  it back with an exact Content-Length by measuring in one pass and sending
+  in a second - the file is never held in RAM alongside a JSON copy.
+  Nothing is written pre-NTP (2000-epoch timestamps would corrupt ordering).
 - events.log auto-rotates at 32KB (keeps the 8KB tail), checked every 50
   events in `state.log_event`.
 - "CPU load" = 1 - (select() idle time / wall time) over 5s windows

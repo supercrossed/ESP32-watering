@@ -33,9 +33,24 @@ settings are deliberately *not* included.
 allowed after a boot (0 once past). See
 [watering.md](watering.md#at-power-on).
 
-### `GET /api/history`
-Moisture readings over time. Decimated to one point per minute, 180 points
-max (3 hours), streamed per-point.
+### `GET /api/history` &nbsp;&middot;&nbsp; `GET /api/history?hours=N`
+Moisture readings over time, streamed per-point.
+
+Without `hours`: the **live** buffer - one point per minute, 180 points
+(3 hours), held in RAM and lost on reboot.
+
+With `hours=N`: the **saved** history from `history.csv` on flash - one
+point per 15 minutes, kept for 7 days, and it **survives reboots**. `N` is
+clamped to 14 days.
+
+Both return the same shape:
+
+```json
+[{"t": 1756000000, "readings": [{"name": "bed1", "percent": 42.1}]}]
+```
+
+A week of two zones is ~21KB on flash. Lines older than 7 days are purged
+automatically (roughly once a day), as are any torn by a power cut.
 
 ### `GET /api/events`
 Recent event log - watering starts/stops, reboots, WiFi transitions, updates.

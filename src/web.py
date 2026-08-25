@@ -24,6 +24,7 @@ import config
 import wifi
 
 INDEX_HTML_PATH = "index.html"
+CRLF = "\r\n"
 
 _server_sock = None
 _valves = {}  # injected by main.py: dict of valve name -> Valve
@@ -177,7 +178,17 @@ def _handle(cl):
     elif path == "/api/status" and method == "GET":
         _send(cl, 200, "application/json", json.dumps(_status_payload()))
     elif path == "/api/history" and method == "GET":
-        _send_history(cl)
+        # ?hours=N serves the flash-backed long history (survives reboots);
+        # no parameter keeps the live 3-hour RAM buffer, which is finer
+        # grained (1/min vs 1/15min) and costs no file reads.
+        try:
+            _hours = int(params.get("hours", 0))
+        except ValueError:
+            _hours = 0
+        if _hours > 0:
+            _send_long_history(cl, min(_hours, 24 * 14))
+        else:
+            _send_history(cl)
     elif path == "/api/events" and method == "GET":
         _send(cl, 200, "application/json", json.dumps(state.get_events()))
     elif path == "/api/valve" and method == "POST":
@@ -1197,6 +1208,70 @@ def _url_decode(s):
             out += s[i]
             i += 1
     return out
+
+
+def _send_long_history(cl, hours):
+    """Stream the flash-backed history as JSON in the same shape the live
+    chart uses. Read line by line and written out in chunks - the file can
+    be ~15KB for a week and must never sit in RAM alongside a JSON copy of
+    itself (see the two-heap notes in docs/development.md).
+
+    Two passes: one to measure so Content-Length is exact, one to send.
+    Reading a small file twice is far cheaper than buffering it once."""
+    cutoff = time.time() - hours * 3600
+
+    def _points():
+        try:
+            with open(state.HISTORY_FILE) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    fields = line.split(",")
+                    try:
+                        ts = int(fields[0])
+                    except (ValueError, IndexError):
+                        continue
+                    if ts < cutoff:
+                        continue
+                    readings = []
+                    for pair in fields[1:]:
+                        name, _, pct = pair.partition("=")
+                        if not name or not pct:
+                            continue
+                        try:
+                            readings.append({"name": name, "percent": float(pct)})
+                        except ValueError:
+                            continue
+                    if readings:
+                        yield {"t": ts, "readings": readings}
+        except OSError:
+            return
+
+    total = 2
+    count = 0
+    for pt in _points():
+        n = len(json.dumps(pt))
+        total += n + (1 if count else 0)
+        count += 1
+        if count % 50 == 0:
+            _feed()
+
+    hdr = "HTTP/1.1 200 OK" + CRLF
+    hdr += "Content-Type: application/json" + CRLF
+    hdr += "Content-Length: {}".format(total) + CRLF
+    hdr += "Connection: close" + CRLF + CRLF
+    cl.send(hdr.encode())
+    cl.send(b"[")
+    i = 0
+    for pt in _points():
+        if i:
+            cl.send(b",")
+        cl.send(json.dumps(pt).encode())
+        i += 1
+        if i % 20 == 0:
+            _feed()
+    cl.send(b"]")
 
 
 def _send_history(cl):

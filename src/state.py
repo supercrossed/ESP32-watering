@@ -87,6 +87,8 @@ def load_watering_state():
     last_daily_watering_ts = _sane(data.get("daily"))
     last_supplemental_watering_ts = _sane(data.get("supplemental"))
     return bool(last_daily_watering_ts or last_supplemental_watering_ts)
+
+
 last_schedule_fired = {}  # schedule id -> unix ts it last fired
 boot_time = time.time()
 time_synced = False  # set once NTP succeeds; schedules are held off until then
@@ -192,15 +194,123 @@ def log_moisture(readings):
     global latest_moisture, _last_history_ts
     latest_moisture = readings
     now = time.time()
-    if now - _last_history_ts < 55:
-        return  # live readings update every cycle; history stays 1/minute
-    _last_history_ts = now
-    _moisture_history.append({
-        "t": now,
-        "readings": [{"name": r["name"], "percent": r["percent"]} for r in readings],
-    })
-    if len(_moisture_history) > MAX_MOISTURE_POINTS:
-        del _moisture_history[0]
+    if now - _last_history_ts >= 55:
+        # live 3-hour buffer, one point per minute, RAM only
+        _last_history_ts = now
+        _moisture_history.append({
+            "t": now,
+            "readings": [{"name": r["name"], "percent": r["percent"]} for r in readings],
+        })
+        if len(_moisture_history) > MAX_MOISTURE_POINTS:
+            del _moisture_history[0]
+    _log_long_history(readings, now)
+
+
+# ---- Long-term history (flash) ---------------------------------------
+# A week at one point per minute would be ~10,000 dicts - several times the
+# whole heap, and this project has twice had the network killed by memory
+# exhaustion. So the long view lives on FLASH as compact CSV, appended one
+# short line at a time and never read into RAM as a whole.
+#
+# Format (one line per sample):   <unix_ts>,<zone>=<pct>,<zone>=<pct>
+# Zone names are included per line so the file stays valid when zones are
+# added, removed or renamed mid-week.
+HISTORY_FILE = "history.csv"
+HISTORY_INTERVAL_SEC = 15 * 60      # 15 min -> 672 points/week, ~15KB
+HISTORY_KEEP_SEC = 7 * 24 * 3600    # purge anything older than a week
+_last_long_history_ts = 0
+_history_writes = 0
+
+
+def _log_long_history(readings, now):
+    """Append one line every HISTORY_INTERVAL_SEC. Cheap: a short append,
+    plus a purge scan roughly once a day."""
+    global _last_long_history_ts, _history_writes
+    if not readings:
+        return
+    # Before NTP sync the clock sits in the 2000 epoch; those timestamps
+    # would sort before everything real and confuse the purge.
+    if not time_synced:
+        return
+    if now - _last_long_history_ts < HISTORY_INTERVAL_SEC:
+        return
+    _last_long_history_ts = now
+    try:
+        parts = [str(int(now))]
+        for r in readings:
+            # commas and '=' would break the format; zone names are
+            # user-supplied so sanitise rather than trust them
+            name = str(r["name"]).replace(",", "_").replace("=", "_")
+            parts.append("{}={}".format(name, r["percent"]))
+        with open(HISTORY_FILE, "a") as f:
+            f.write(",".join(parts) + chr(10))
+    except OSError as e:
+        print("history write failed:", e)
+        return
+    _history_writes += 1
+    # ~once a day at 15-min spacing; a purge rewrites the file, so it is
+    # deliberately infrequent
+    if _history_writes >= 96:
+        _history_writes = 0
+        purge_history()
+
+
+def purge_history(now=None):
+    """Drop lines older than HISTORY_KEEP_SEC. Streams line by line - the
+    file is never held in RAM in full."""
+    if now is None:
+        now = time.time()
+    cutoff = now - HISTORY_KEEP_SEC
+    tmp = HISTORY_FILE + ".tmp"
+    kept = dropped = bad = 0
+    try:
+        with open(HISTORY_FILE) as src, open(tmp, "w") as dst:
+            for line in src:
+                if not line.strip():
+                    bad += 1
+                    continue
+                try:
+                    ts = int(line.split(",", 1)[0])
+                except (ValueError, IndexError):
+                    # A torn line (power cut mid-append) or corruption.
+                    # Count it so the rewrite below actually happens -
+                    # otherwise it would survive every purge forever.
+                    bad += 1
+                    continue
+                if ts >= cutoff:
+                    dst.write(line)
+                    kept += 1
+                else:
+                    dropped += 1
+    except OSError as e:
+        print("history purge failed:", e)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return
+    if dropped or bad:
+        try:
+            os.remove(HISTORY_FILE)
+            os.rename(tmp, HISTORY_FILE)
+            print("history purged: kept {}, dropped {}{}".format(
+                kept, dropped, ", discarded {} bad line(s)".format(bad) if bad else ""))
+        except OSError as e:
+            print("history purge rename failed:", e)
+    else:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def history_file_info():
+    """(bytes, approximate line count) for the dashboard/API."""
+    try:
+        size = os.stat(HISTORY_FILE)[6]
+    except OSError:
+        return 0, 0
+    return size, 0
 
 
 def get_events():

@@ -126,9 +126,11 @@ WIFI_RESCUE_AFTER_SEC = 300
 # Optional nightly maintenance reboot at this local hour (0-23) - the
 # classic embedded uptime trick: valves close on boot, so a quiet-hour
 # reboot is invisible and clears any slow memory/driver degradation.
-# None disables. Only fires once the clock is NTP-synced and no watering
-# is active or queued.
-DAILY_REBOOT_HOUR = None
+# None disables. Only fires once the clock is NTP-synced, no watering is
+# active or queued, and the board has been up over an hour (so a reboot
+# can never turn into a boot loop).
+# 0 = midnight local time.
+DAILY_REBOOT_HOUR = 0
 
 # ---- Timing ----
 MOISTURE_CHECK_INTERVAL_SEC = 15
