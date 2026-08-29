@@ -55,6 +55,45 @@ collapses.
 
 ---
 
+## WiFi drops after sensors are connected
+
+**Symptom:** the planter is stable until moisture sensors are wired in;
+after that WiFi drops out, the dashboard becomes unreachable, or the board
+reboots on its own.
+
+**Cause:** the ESP32 runs I2C, WiFi and the watering logic from one main
+loop. If a sensor holds the SDA line low - realistic with capacitive probes
+on long unshielded garden runs, a marginal connector, or a solenoid
+switching nearby - the I2C transaction stalls. The loop stalls with it, so
+nothing feeds the WiFi stack or the watchdog, and the connection dies.
+
+**Fixed in current versions.** Four changes, all in place:
+
+- The I2C bus is created with an explicit **timeout** (`I2C_TIMEOUT_US`,
+  50ms). A stuck transaction now raises `OSError` instead of blocking.
+- Bus speed defaults to **100kHz** (`I2C_FREQ`), which tolerates long runs
+  far better than 400kHz.
+- The ADS1115 driver **retries once** on a transient error before failing.
+- After 3 consecutive failures the device **rebuilds the I2C peripheral**
+  entirely - which clears a slave latching SDA low - and only falls back to
+  the 5-minute interval if that doesn't help. Look for
+  `I2C bus reinitialised` in the event log.
+
+**If it still happens, the wiring is the next place to look:**
+
+- **Pull-up resistors.** Most ADS1115 breakouts include 10k pull-ups. With
+  several boards on one bus those parallel down too far; remove the
+  pull-ups from all but one board.
+- **Run length.** Over ~1m of unshielded cable, I2C gets unreliable. Use
+  shielded or twisted cable, and keep it away from the solenoid wiring.
+- **Shared ground.** Sensors, ADS1115, and ESP32 all need a solid common
+  ground - a marginal one shows up as intermittent I2C failures.
+- **Power.** Capacitive probes on the 3.3V rail alongside WiFi can brown
+  out the rail during transmit peaks. If failures correlate with WiFi
+  activity, try powering the probes separately.
+
+---
+
 ## `[Errno 19] ENODEV` on moisture reads
 
 The ADS1115 isn't responding on the I2C bus.
@@ -128,6 +167,51 @@ is online but nothing can reach it."
 - Guest/IoT SSID with client isolation
 - DHCP handed out a new IP (reconnect events log the current one)
 - Stale ARP entry - `arp -d *` in an admin shell
+
+---
+
+## Valve closed early, or a nonsense "open 1800000000s" in the log
+
+Fixed in current versions. The safety cutoff used the wall clock, which an
+NTP sync moves - the first sync of a boot jumps it ~26 years from the 2000
+epoch. A valve open across that jump was force-closed immediately and the
+event log recorded an absurd duration.
+
+The more serious half of the same bug: if the clock ever moved *backward*,
+elapsed time went negative and **the cutoff never fired at all**. The cutoff
+now uses the monotonic `ticks_ms()` clock, which no clock change affects.
+
+---
+
+## Dashboard unreachable but the device says WiFi is connected
+
+This is a **zombie connection**: the radio is associated with the access
+point, so `isconnected()` and the status card both read healthy, but no
+packets actually reach the router. Causes include an expired DHCP lease, a
+router that rebooted and cleared its NAT table, or a wedged lwIP state on
+the ESP32.
+
+**Handled automatically in current versions.** Every 15 minutes the planter
+opens a TCP connection to its gateway to prove packets move. On repeated
+failure it reconnects, then resets the interface entirely. Watch the event
+log for:
+
+```
+[EVENT] wifi gateway unreachable though associated - watching
+[EVENT] wifi gateway still unreachable - reconnecting
+[EVENT] wifi gateway unreachable x3 - resetting the interface
+```
+
+The dashboard's WiFi row shows `connected but the router is not responding`
+while this is happening.
+
+Tuning lives in `src/config.py`: `WIFI_HEALTH_CHECK_SEC` (0 disables),
+`WIFI_HEALTH_TIMEOUT_SEC`.
+
+**Note the probe targets the gateway, not the internet.** An ISP outage
+does not drop a working local dashboard - see
+[watering.md](watering.md#at-power-on) for the general principle that the
+planter's core functions never depend on the internet.
 
 ---
 

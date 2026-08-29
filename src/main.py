@@ -124,7 +124,22 @@ try_ntp_sync()
 settings_store.load(config)
 hw = settings_store.get()["hardware"]
 
-i2c = I2C(0, scl=Pin(hw["i2c_scl_pin"]), sda=Pin(hw["i2c_sda_pin"]))
+# I2C bus. The timeout is the important argument here: without a bound, a
+# sensor that holds SDA low - a real possibility with capacitive probes on
+# long garden wiring, or a marginal connector - stalls the transaction, and
+# the main loop that stalls with it is the same one servicing WiFi and the
+# valve safety cutoff. A bounded transaction raises OSError instead, which
+# the read path already handles.
+#
+# 100kHz (rather than the 400kHz some drivers default to) is deliberate:
+# it is far more tolerant of the long, unshielded runs a planter uses.
+i2c = I2C(
+    0,
+    scl=Pin(hw["i2c_scl_pin"]),
+    sda=Pin(hw["i2c_sda_pin"]),
+    freq=getattr(config, "I2C_FREQ", 100000),
+    timeout=getattr(config, "I2C_TIMEOUT_US", 50000),
+)
 # One driver per ADS1115 board - they all share the I2C bus, each at its
 # own address. A zone's channel is a global index (board 1 = 0-3,
 # board 2 = 4-7, ...) resolved in moisture.read_all().
@@ -161,24 +176,63 @@ if hw.get("rain_sensor_pin") is not None:
     print("Rain sensor on GPIO", hw["rain_sensor_pin"])
 
 
+# A failing env sensor is retried on a backoff rather than every cycle.
+# AHT20.read() sleeps 85ms mid-conversion and every failed attempt churns
+# the same ESP-IDF C heap the WiFi stack allocates from - hammering a dead
+# sensor every 15s is exactly the pattern the moisture backoff exists to
+# avoid. Counted per chip so one failing sensor doesn't mute the other.
+_env_fail = {"aht20": 0, "bmp280": 0}
+_env_skip = {"aht20": 0, "bmp280": 0}
+_ENV_FAIL_LIMIT = 3
+_ENV_SKIP_CYCLES = 20      # ~5 min at the 15s sensor tick
+
+
+def _env_should_read(key):
+    """False while a repeatedly-failing sensor is in its backoff window."""
+    if _env_skip[key] > 0:
+        _env_skip[key] -= 1
+        return False
+    return True
+
+
+def _env_note(key, ok):
+    if ok:
+        if _env_fail[key] >= _ENV_FAIL_LIMIT:
+            state.log_event("sensors", "{} recovered".format(key))
+        _env_fail[key] = 0
+        return
+    _env_fail[key] += 1
+    if _env_fail[key] == _ENV_FAIL_LIMIT:
+        _env_skip[key] = _ENV_SKIP_CYCLES
+        state.log_event(
+            "sensors",
+            "{} failed {}x - backing off".format(key, _ENV_FAIL_LIMIT))
+    elif _env_fail[key] > _ENV_FAIL_LIMIT:
+        _env_skip[key] = _ENV_SKIP_CYCLES
+
+
 def read_env_sensors():
     """Refresh state.env from whatever optional sensors are present."""
     env = {}
-    if aht20:
+    if aht20 and _env_should_read("aht20"):
         try:
             t, h = aht20.read()
             env["temp_c"] = round(t, 1)
             env["humidity"] = round(h)
+            _env_note("aht20", True)
         except Exception as e:
             print("AHT20 read failed:", e)
-    if bmp280:
+            _env_note("aht20", False)
+    if bmp280 and _env_should_read("bmp280"):
         try:
             t2, p = bmp280.read()
             env["pressure_hpa"] = round(p / 100.0, 1)
             if "temp_c" not in env:
                 env["temp_c"] = round(t2, 1)
+            _env_note("bmp280", True)
         except Exception as e:
             print("BMP280 read failed:", e)
+            _env_note("bmp280", False)
     if rain_pin is not None:
         env["rain"] = rain_pin.value() == 0  # LM393 DO is LOW when wet
     state.env = env
@@ -374,6 +428,55 @@ def sample_zone_raw(zone_name, seconds=10, wdt_ref=None):
     }
 
 
+def reinit_i2c():
+    """Tear down and rebuild the I2C peripheral, then re-point the drivers
+    at the new bus. Returns True if the bus answers afterwards.
+
+    Why this exists: a slave that latches SDA low wedges the bus for every
+    device on it. Rebuilding the peripheral releases the pins and usually
+    clears the condition. Everything is best-effort - a failure here just
+    leaves the sensors unread, which the caller already handles."""
+    global i2c, ads_boards, aht20, bmp280
+    try:
+        hw = settings_store.get()["hardware"]
+        try:
+            i2c.deinit()
+        except (AttributeError, OSError):
+            pass  # not every port implements deinit
+        time.sleep_ms(50)
+        i2c = I2C(
+            0,
+            scl=Pin(hw["i2c_scl_pin"]),
+            sda=Pin(hw["i2c_sda_pin"]),
+            freq=getattr(config, "I2C_FREQ", 100000),
+            timeout=getattr(config, "I2C_TIMEOUT_US", 50000),
+        )
+        found = i2c.scan()
+        # rebuild the drivers so they hold the NEW bus object
+        ads_boards = [ADS1115(i2c, address=a) for a in hw["ads1115_addresses"]]
+        if aht20 is not None or bmp280 is not None:
+            try:
+                import env_sensors
+                aht20 = env_sensors.AHT20(i2c) if env_sensors.AHT20_ADDR in found else None
+                bmp280 = None
+                for _a in env_sensors.BMP280_ADDRS:
+                    if _a in found:
+                        bmp280 = env_sensors.BMP280(i2c, _a)
+                        break
+            except Exception as e:
+                print("env sensor re-init failed:", e)
+        web.set_i2c(i2c)
+        ok = bool(found)
+        state.log_event(
+            "sensors",
+            "I2C bus reinitialised - {}".format(
+                "found " + ",".join(hex(a) for a in found) if ok else "still no devices"))
+        return ok
+    except Exception as e:
+        print("I2C reinit failed:", e)
+        return False
+
+
 def build_zone_list(hw):
     """Every configured zone as {name, channel, dry_raw, wet_raw,
     threshold_percent}, ready for moisture.read_all().
@@ -561,6 +664,12 @@ last_moisture_check = 0
 last_schedule_check = 0
 last_wifi_check = 0
 last_ntp_retry = 0
+# Link health (see wifi.lan_healthy). isconnected() only proves the radio
+# is associated; these track whether packets actually move.
+last_health_check = 0
+lan_fail_streak = 0
+last_ntp_ok = 0          # unix ts of the last successful sync, 0 = never
+last_ntp_recycle = 0     # so a long internet outage recycles once, not hourly
 wifi_was_up = wifi.is_connected()
 wifi_down_since = None
 rescue_mod = None  # wifi_setup, imported lazily the first time rescue engages
@@ -730,9 +839,20 @@ while True:
     if wdt:
         wdt.feed()
 
-    # safety cutoff always checked, every iteration, for every valve
+    # Safety cutoff: checked every iteration, for every valve, and wrapped
+    # individually. An exception escaping here would propagate out of the
+    # while loop and END main.py - leaving whatever valve is open STILL
+    # OPEN until the watchdog reboots. Per-valve isolation also means one
+    # valve's failure can't stop the others being checked.
     for v in valves.values():
-        v.check_safety_cutoff()
+        try:
+            v.check_safety_cutoff()
+        except Exception as e:
+            print("safety cutoff error on", getattr(v, "name", "?"), "-", e)
+            try:
+                v.close(reason="safety_cutoff_error")  # fail closed
+            except Exception:
+                pass
 
     # close valve if a timed watering has hit its target
     try:
@@ -761,6 +881,14 @@ while True:
                 state.log_event(
                     "sensors",
                     "3 straight moisture read failures - backing off to 5 min (ADS1115 wired?)")
+                # Try to recover the bus itself before settling into the
+                # slow interval. A stuck slave holding SDA low survives a
+                # driver-level retry but usually clears when the peripheral
+                # is torn down and rebuilt - and that is far cheaper than
+                # waiting for the watchdog to reboot the whole controller.
+                if reinit_i2c():
+                    moisture_fail_streak = 0
+                    moisture_interval = config.MOISTURE_CHECK_INTERVAL_SEC
         try:
             read_env_sensors()
         except Exception as e:
@@ -823,6 +951,93 @@ while True:
         except Exception as e:
             print("wifi check error:", e)
 
+    # ---- Link health: is this connection real, or a zombie? ----
+    # A router can be up while its DHCP lease expired, its NAT table was
+    # cleared, or our own lwIP state wedged. In all of those isconnected()
+    # still reports True and the dashboard is unreachable - the failure
+    # that looks like "everything says fine but nothing responds".
+    #
+    # Skipped while the rescue hotspot is up (it owns the radio), during an
+    # OTA or calibration (both already occupy the loop), and while a valve
+    # is open (a recycle blocks for up to ~11s and valve timing comes
+    # first - the check simply runs on the next pass).
+    _health_every = getattr(config, "WIFI_HEALTH_CHECK_SEC", 900)
+    if (_health_every and wifi_was_up
+            and now - last_health_check >= _health_every
+            and not (rescue_mod and rescue_mod.rescue_active())
+            and not state.update_in_progress and not state.update_requested
+            and not state.calibration_busy
+            and not state.any_valve_open() and not _pending_valves):
+        last_health_check = now
+        try:
+            if wdt:
+                wdt.feed()
+            healthy = wifi.lan_healthy(
+                timeout=getattr(config, "WIFI_HEALTH_TIMEOUT_SEC", 3))
+            if wdt:
+                wdt.feed()
+
+            if healthy is None:
+                pass          # inconclusive - never act on a guess
+            elif healthy:
+                if lan_fail_streak:
+                    state.log_event(
+                        "wifi", "link healthy again after {} failed probe(s)".format(
+                            lan_fail_streak))
+                lan_fail_streak = 0
+                state.lan_ok = True
+            else:
+                lan_fail_streak += 1
+                state.lan_ok = False
+                # Escalate: one failure can be a blip, so only act on the
+                # second. A soft reconnect clears a stale association or an
+                # expired lease; a hard interface reset is what clears a
+                # wedged driver/lwIP state.
+                if lan_fail_streak == 1:
+                    state.log_event(
+                        "wifi", "gateway unreachable though associated - watching")
+                elif lan_fail_streak == 2:
+                    state.log_event("wifi", "gateway still unreachable - reconnecting")
+                    ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
+                    state.log_event(
+                        "wifi", "soft reconnect " + ("ok, IP: " + wifi.current_ip()
+                                                     if ok else "failed"))
+                else:
+                    state.log_event(
+                        "wifi", "gateway unreachable x{} - resetting the interface".format(
+                            lan_fail_streak))
+                    ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"],
+                                      hard=True)
+                    state.log_event(
+                        "wifi", "hard reset " + ("ok, IP: " + wifi.current_ip()
+                                                 if ok else "failed"))
+                    if not ok:
+                        # let the existing rescue-hotspot path take over
+                        wifi_was_up = False
+                        if wifi_down_since is None:
+                            wifi_down_since = now
+            if wdt:
+                wdt.feed()
+
+            # Second escalation: the LAN is fine but NTP has been failing
+            # for hours. That is usually just an ISP outage - which is why
+            # it does NOT recycle on its own - but if it persists something
+            # upstream of us may be stuck, so try exactly one reconnect and
+            # then leave it alone.
+            _stale = getattr(config, "NTP_STALE_RECYCLE_SEC", 6 * 3600)
+            if (_stale and state.time_synced and last_ntp_ok
+                    and healthy is not False
+                    and now - last_ntp_ok >= _stale
+                    and now - last_ntp_recycle >= _stale):
+                last_ntp_recycle = now
+                state.log_event(
+                    "wifi",
+                    "no NTP for {}h though the LAN is up - one reconnect".format(
+                        int((now - last_ntp_ok) / 3600)))
+                wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
+        except Exception as e:
+            print("link health check error:", e)
+
     # answer captive-probe DNS while the rescue hotspot is up
     if rescue_mod and rescue_mod.rescue_active():
         try:
@@ -831,9 +1046,21 @@ while True:
             print("rescue poll error:", e)
 
     # clock self-heal: keep retrying NTP until it works
-    if not state.time_synced and now - last_ntp_retry >= 300:
+    # NTP. Until the first success this retries every 5 min (schedules are
+    # held until the clock is real). AFTER that it keeps resyncing on a slow
+    # cadence: the ESP32's RTC drifts, and this used to stop forever once
+    # `time_synced` went True, so a planter left running for months would
+    # fire its schedules increasingly off the intended time.
+    _ntp_due = 300 if not state.time_synced else getattr(
+        config, "NTP_RESYNC_SEC", 3600)
+    if now - last_ntp_retry >= _ntp_due:
         last_ntp_retry = now
-        try_ntp_sync()
+        if wdt:
+            wdt.feed()
+        if try_ntp_sync():
+            last_ntp_ok = time.time()
+        if wdt:
+            wdt.feed()
 
     # This build has run long enough to be trusted - clear boot.py's
     # failed-boot counter so a later crash isn't blamed on an old update.

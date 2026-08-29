@@ -20,7 +20,7 @@ settings are deliberately *not* included.
                         "last_close_ts": 1753412400, "last_close_reason": "moisture_trigger"}},
   "uptime_sec": 8412, "now": 1753420812,
   "startup_grace_left": 0,
-  "time_synced": true, "wifi_connected": true,
+  "time_synced": true, "wifi_connected": true, "lan_ok": true,
   "env": {"temp_c": 22.4, "humidity": 51, "pressure_hpa": 1013.2, "rain": false},
   "mem_free": 94704, "mem_alloc": 45312, "cpu_percent": 3,
   "idf_free": 33548, "idf_largest": 32768,
@@ -32,6 +32,12 @@ settings are deliberately *not* included.
 `startup_grace_left` counts down the seconds until moisture watering is
 allowed after a boot (0 once past). See
 [watering.md](watering.md#at-power-on).
+
+`lan_ok` is the result of the last gateway probe: `true` = packets reach the
+router, `false` = associated but nothing comes back (a zombie connection,
+being reconnected), `null` = not probed yet. `wifi_connected` alone only
+means the radio is associated. See
+[troubleshooting.md](troubleshooting.md#dashboard-unreachable-but-the-device-says-wifi-is-connected).
 
 ### `GET /api/history` &nbsp;&middot;&nbsp; `GET /api/history?hours=N`
 Moisture readings over time, streamed per-point.

@@ -1,25 +1,25 @@
 {
-    "version":  "2026.08.24.2234",
-    "generated":  "2026-08-24T22:34:04.6565457-04:00",
+    "version":  "2026.08.29.1128",
+    "generated":  "2026-08-29T11:28:54.9232062-04:00",
     "files":  {
                   "web.mpy":  {
-                                  "sha256":  "e7db611c3231127a94a73268def6fdc50be2e5584431e067b4ed183458849ce9",
-                                  "size":  16848,
+                                  "sha256":  "2ffb63f36c1da86b649d22e029c0767f112a76b6d115d83c842389e08cfbb199",
+                                  "size":  17637,
                                   "path":  "build/web.mpy"
                               },
                   "valve.mpy":  {
-                                    "sha256":  "923bc530a7028b318d56a36934d366e3e718c3b0565e6775a94e41b236255b1f",
-                                    "size":  920,
+                                    "sha256":  "4424974dd01ba1e3133b97c6249096d6bb6f1db309cbf7a75bff9229cd0c204c",
+                                    "size":  1100,
                                     "path":  "build/valve.mpy"
                                 },
                   "wifi.mpy":  {
-                                   "sha256":  "9e7c2338ffd07e6f1046bf52c67f5b72ecdecb74d37195225f15cfd636daa672",
-                                   "size":  1551,
+                                   "sha256":  "1734f7ee8178c945180299e607d454de6343d2f61e5774d00585c07ce9a900ef",
+                                   "size":  2215,
                                    "path":  "build/wifi.mpy"
                                },
                   "state.mpy":  {
-                                    "sha256":  "3c0ecf98c63c8e7961b0aa4ba981e5773575d8f43d211dba2bdebbe0b5ef9c3f",
-                                    "size":  3342,
+                                    "sha256":  "ab6ffc14bfb2a236d796dab25ff662965ce11e20b7105457b940c4de4c58e9d6",
+                                    "size":  3374,
                                     "path":  "build/state.mpy"
                                 },
                   "env_sensors.mpy":  {
@@ -28,8 +28,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "b0846f72ac0796276a71b95834ba9602f7fd663432f3e5f3083b417462872519",
-                                  "size":  42297,
+                                  "sha256":  "487ae202172d8b4b9164011d94858cf29b8b9978ec0b736726a30627a4dd82e1",
+                                  "size":  52789,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
@@ -48,23 +48,23 @@
                                              "path":  "build/settings_store.mpy"
                                          },
                   "moisture.mpy":  {
-                                       "sha256":  "f923987dcead33cf4d582a41e57549893d53009f3d894e7b8576567d95587917",
-                                       "size":  389,
+                                       "sha256":  "f641e68a1c29cf14849e436afc550057dd493a88afb8b3902ce7ccfe23afc832",
+                                       "size":  466,
                                        "path":  "build/moisture.mpy"
                                    },
                   "wifi_setup.mpy":  {
-                                         "sha256":  "79daed04ff2db16722b9bee3403e8f06b6291f95ee8937e3f73e365e08d7e2ac",
-                                         "size":  8374,
+                                         "sha256":  "1862f50a995149ce876826e3e04f265d5d65694cfafeb23bd78f1c819febcb68",
+                                         "size":  8501,
                                          "path":  "build/wifi_setup.mpy"
                                      },
                   "index.html":  {
-                                     "sha256":  "635f7141bb3527ece2eec409cb2ba4905ecaabd4fabe2ec7292570c3b547d9f3",
-                                     "size":  100774,
+                                     "sha256":  "295e55005e9371f886b6a47e44282ab61b9efac3c450f64061b2e15c4ede00f9",
+                                     "size":  101022,
                                      "path":  "build/index.html"
                                  },
                   "ads1x15.mpy":  {
-                                      "sha256":  "87a6dc024e66891e9646506271209468770e1a900aed919081840ad7a49a9a69",
-                                      "size":  693,
+                                      "sha256":  "bb86ecfd720b508275b050bbd575800d4ac0d9c615deef97a08d82ab990dc1e3",
+                                      "size":  776,
                                       "path":  "build/ads1x15.mpy"
                                   }
               }

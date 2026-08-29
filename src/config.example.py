@@ -17,6 +17,17 @@ WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"
 I2C_SCL_PIN = 22
 I2C_SDA_PIN = 21
 ADS1115_ADDRESS = 0x48
+# Bus speed. 100kHz is the safe default for a planter: sensor runs are
+# long, unshielded and often near a solenoid, and 400kHz is far less
+# tolerant of that. Only raise it if you have short, clean wiring.
+I2C_FREQ = 100000
+# Hard limit on a single I2C transaction, in microseconds. WITHOUT this a
+# sensor that holds SDA low can stall the transaction - and the main loop
+# it stalls is the same one feeding the WiFi stack and checking the valve
+# safety cutoff, which is why "WiFi drops once sensors are added" is a
+# real failure mode. A bounded transaction raises OSError instead, which
+# the read path handles per-zone.
+I2C_TIMEOUT_US = 50000
 
 # ---- Valves (IRF520 MOSFET gate pin) ----
 # Each valve is a separate solenoid. name = referenced by zones/schedules.
@@ -122,6 +133,28 @@ WATCHDOG_TIMEOUT_SEC = 120
 # running, reconnect attempts continue, and joining the hotspot reaches
 # the dashboard at http://192.168.4.1 to fix the network. 0 disables.
 WIFI_RESCUE_AFTER_SEC = 300
+
+# ---- Link health ----
+# isconnected() only means the radio is ASSOCIATED. A router whose DHCP
+# lease expired, whose NAT table was cleared, or a wedged lwIP state on our
+# side all leave it reporting True while the dashboard is unreachable.
+# This periodically opens a TCP connection to the gateway to prove packets
+# actually move, and reconnects if they don't. 0 disables.
+WIFI_HEALTH_CHECK_SEC = 900        # every 15 min
+# How long that probe may block the main loop. Keep it short.
+WIFI_HEALTH_TIMEOUT_SEC = 3
+
+# Re-sync the clock this often once it is already set. The ESP32's RTC
+# drifts, so without a periodic resync a planter left running for months
+# fires its schedules increasingly off the intended time.
+NTP_RESYNC_SEC = 3600
+
+# If NTP has failed this long while the LAN itself is healthy, try exactly
+# one reconnect. Usually this is just an ISP outage - which is why a failing
+# NTP alone never recycles the connection, since the dashboard only needs
+# the LAN - but a long stall can also mean something upstream is stuck.
+# 0 disables.
+NTP_STALE_RECYCLE_SEC = 6 * 3600
 
 # Optional nightly maintenance reboot at this local hour (0-23) - the
 # classic embedded uptime trick: valves close on boot, so a quiet-hour

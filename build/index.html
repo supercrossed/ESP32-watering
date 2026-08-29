@@ -803,8 +803,12 @@ async function refresh() {
   document.getElementById('status-clock').textContent = s.time_synced
     ? 'synced (NTP)'
     : 'NOT SYNCED - scheduled watering paused until the clock syncs';
+  // "connected" alone is misleading: the radio can be associated while no
+  // packets reach the router. lan_ok is the result of an actual probe.
   document.getElementById('status-wifi').textContent = s.wifi_connected
-    ? 'connected'
+    ? (s.lan_ok === false
+        ? 'connected but the router is not responding - reconnecting'
+        : 'connected')
     : 'DOWN - retrying; rescue hotspot opens after 5 min';
   const memTotal = (s.mem_free != null && s.mem_alloc != null) ? s.mem_free + s.mem_alloc : null;
   document.getElementById('status-mem').textContent = memTotal

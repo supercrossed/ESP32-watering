@@ -5,6 +5,119 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-08-29
+
+### Added: link health checks - detecting a "zombie" WiFi connection
+`isconnected()` only reports that the radio is **associated** with an access
+point. It says nothing about whether packets move. A router whose DHCP lease
+expired, whose NAT table was cleared, or a wedged lwIP state on the device
+all leave it reporting `True` while the dashboard is unreachable - the
+failure where every status field reads healthy and nothing responds.
+
+Every 15 minutes (`WIFI_HEALTH_CHECK_SEC`) the planter now opens a TCP
+connection to its **gateway**. Any reply proves the path - including a
+connection refusal, since a refusal is still a packet coming back. Only a
+timeout counts as failure, and an unrecognised error is treated as
+inconclusive rather than acted on: a false positive costs a working
+connection, which is worse than missing one bad cycle.
+
+On failure it escalates rather than thrashing:
+
+| Consecutive failures | Action |
+|---|---|
+| 1 | Logged only - a blip is not a fault |
+| 2 | Soft reconnect (disconnect + connect) |
+| 3+ | Hard reset: drop the interface and re-activate it, clearing wedged lwIP state |
+
+Still failing after that hands off to the existing rescue-hotspot path.
+
+**The gateway is deliberately the probe target, not the internet.** The
+dashboard only needs the LAN, so an ISP outage must not drop a working local
+connection. NTP failure alone therefore never recycles WiFi - but if NTP has
+been failing for 6+ hours *while the LAN is healthy*
+(`NTP_STALE_RECYCLE_SEC`), one single reconnect is attempted in case
+something upstream is stuck, and it does not repeat.
+
+The check is skipped while a valve is open, during an OTA or a calibration,
+and while the rescue hotspot owns the radio.
+
+The dashboard's WiFi row now distinguishes the two states: "connected" vs
+"connected but the router is not responding - reconnecting". New `lan_ok`
+field in `/api/status`.
+
+### Fixed: NTP never resynced after the first success
+The retry was gated on `if not state.time_synced`, so once the clock was set
+it never ran again. The ESP32's RTC drifts, so a planter left running for
+months fired its schedules increasingly off the intended time. It now
+resyncs hourly (`NTP_RESYNC_SEC`).
+
+---
+
+### Hardening sweep: hangs, crashes and WiFi stability
+A systematic review of the codebase for the same class of bug as the I2C
+stall. Six issues found and fixed:
+
+- **The valve safety cutoff measured wall-clock time.** An NTP sync moves
+  that clock - forward by ~26 years from the 2000 epoch at first sync. A
+  forward jump force-closed a valve spuriously; a **backward** jump made
+  the elapsed time negative, so the cutoff would never fire and water would
+  run with the last safety net silently disabled. It now uses the monotonic
+  `ticks_ms()` clock, which no clock change can affect.
+- **The safety-cutoff loop was the one main-loop section not wrapped** in
+  try/except, against the project's own stated invariant. An exception
+  there would end `main.py` outright and leave an open valve open until the
+  watchdog rebooted. It is now isolated per valve and fails closed.
+- **Request bodies were buffered without a cap.** `Content-Length` is
+  client-supplied, so a large or malformed value grew a bytes object toward
+  it on a ~100KB heap - a direct route to memory exhaustion and the WiFi
+  death that follows. Capped at 16KB (uploads stream to flash separately
+  and are unaffected).
+- **Uploads could hang the device with the watchdog disarmed.** The upload
+  loop calls `_feed()` while reading, so a client trickling bytes against a
+  huge `Content-Length` would keep the watchdog alive indefinitely. Uploads
+  are now capped at 512KB with a 120s deadline.
+- **Unguarded `int()` on query strings and headers.** `?duration=abc` or a
+  malformed `Content-Length` raised out of the handler, dropping the
+  connection with no response. All such conversions now fall back to a
+  default and clamp.
+- **A failing environment sensor was retried every cycle forever.** Each
+  AHT20 attempt blocks 85ms and churns the same C heap the WiFi stack uses
+  - the exact pattern the moisture backoff exists to prevent. Failures now
+  back off, per chip, and recover automatically.
+
+The captive portal's body reader had the same unbounded-read and
+unguarded-`int()` bugs as the main server; both are fixed there too.
+
+---
+
+## 2026-08-25
+
+### Fixed: WiFi dropping once moisture sensors are connected
+The ESP32 services I2C, WiFi and watering from one loop. A sensor holding
+SDA low - realistic on long garden runs or a marginal connector - stalled
+the I2C transaction and therefore the loop, so nothing fed the WiFi stack.
+The symptom was WiFi dying only after sensors were added.
+
+Four fixes:
+
+- The I2C bus is now created with an explicit **timeout**
+  (`I2C_TIMEOUT_US`, 50ms). A stuck transaction raises `OSError` instead of
+  blocking indefinitely.
+- Bus speed is pinned to **100kHz** (`I2C_FREQ`) - far more tolerant of the
+  long unshielded runs a planter uses than 400kHz.
+- The ADS1115 driver **retries once** on a transient error.
+- **A failing zone no longer blinds the others.** An exception mid-loop
+  used to abort the whole cycle, so every zone after the bad one silently
+  went unread. Each zone is now isolated.
+- After 3 consecutive failures the device **rebuilds the I2C peripheral**
+  (`reinit_i2c`), which clears a slave latching SDA low, before falling
+  back to the slow interval.
+
+Wiring guidance added to `docs/hardware.md` - notably that parallel
+pull-ups from multiple ADS1115 breakouts are a common cause.
+
+---
+
 ## 2026-08-24
 
 ### Added: moisture history survives reboots

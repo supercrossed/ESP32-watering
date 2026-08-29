@@ -31,7 +31,19 @@ class ADS1115:
         self.address = address
         self.gain = gain  # +/- gain in mV, default 6144 = +/-6.144V full scale
 
-    def read_raw(self, channel):
+    def read_raw(self, channel, retries=1):
+        """One single-shot conversion on `channel`.
+
+        Blocks ~9ms for the conversion (128SPS). That is deliberate dead
+        time in the caller's loop, so keep the number of channels read per
+        cycle modest - 4 zones is ~40ms, which the main loop absorbs, but
+        this is why sampling is on a 15s tick and not continuous.
+
+        A transient I2C error (noise on a long garden run, a marginal
+        connector) is retried once before giving up: retrying here is much
+        cheaper than losing the whole reading for 15 seconds, and a bus
+        that is genuinely wedged still raises rather than hanging, because
+        main.py constructs the I2C object with an explicit timeout."""
         if channel not in _MUX_SINGLE:
             raise ValueError("channel must be 0-3")
         config = (
@@ -45,13 +57,22 @@ class ADS1115:
         buf = bytearray(2)
         buf[0] = (config >> 8) & 0xFF
         buf[1] = config & 0xFF
-        self.i2c.writeto_mem(self.address, _REG_CONFIG, buf)
-        time.sleep_ms(9)  # conversion time at 128SPS is ~8ms, pad a bit
-        data = self.i2c.readfrom_mem(self.address, _REG_CONVERSION, 2)
-        raw = (data[0] << 8) | data[1]
-        if raw > 32767:
-            raw -= 65536
-        return raw
+
+        last_err = None
+        for attempt in range(retries + 1):
+            try:
+                self.i2c.writeto_mem(self.address, _REG_CONFIG, buf)
+                time.sleep_ms(9)  # conversion time at 128SPS is ~8ms, pad a bit
+                data = self.i2c.readfrom_mem(self.address, _REG_CONVERSION, 2)
+                raw = (data[0] << 8) | data[1]
+                if raw > 32767:
+                    raw -= 65536
+                return raw
+            except OSError as e:
+                last_err = e
+                if attempt < retries:
+                    time.sleep_ms(5)  # let the bus settle, then try once more
+        raise last_err
 
     def read_voltage(self, channel):
         raw = self.read_raw(channel)

@@ -102,6 +102,11 @@ cpu_percent = None
 # bytes and largest contiguous block, sampled by main.py. When this heap
 # runs out, WiFi/I2C start failing ("fail to alloc timer", "command link
 # malloc error") even though gc.mem_free() looks fine.
+# Last link-health probe result (see wifi.lan_healthy): True = packets
+# reach the gateway, False = associated but nothing comes back ("zombie"),
+# None = not probed yet.
+lan_ok = None
+
 idf_free = None
 idf_largest = None
 
@@ -135,7 +140,8 @@ def _valve_slot(name):
         name,
         {
             "is_open": False,
-            "opened_at": None,
+            "opened_at": None,       # wall clock, for display
+            "opened_ticks": None,    # monotonic ticks_ms, for the safety cutoff
             "open_reason": None,
             "last_close_ts": None,
             "last_close_reason": None,

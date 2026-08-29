@@ -51,6 +51,26 @@ ESP32 GND     ----> GND
 This is the most common point of confusion: **boards are daisy-chained on the
 same two pins.** A second ADS1115 does not need two more GPIO.
 
+### Bus reliability
+
+I2C was designed for short traces on a circuit board, not garden wiring, and
+a stalled bus can take WiFi down with it (see
+[troubleshooting](troubleshooting.md#wifi-drops-after-sensors-are-connected)).
+The firmware bounds every transaction with a timeout and can rebuild the bus
+if it wedges, but good wiring matters:
+
+- **Keep runs short** - under ~1m of unshielded cable. Longer needs
+  shielded or twisted pair.
+- **One set of pull-ups.** Most ADS1115 breakouts carry 10k pull-ups on SDA
+  and SCL. Two boards halve that, four quarter it - remove the resistors
+  from all but one board.
+- **Route away from solenoid wiring** - switching 12V inductive loads
+  couples noise straight into an adjacent signal pair.
+- **Solid common ground** between ESP32, ADS1115 and sensors.
+
+The bus runs at 100kHz (`I2C_FREQ` in `config.py`) rather than 400kHz for
+exactly this reason. Only raise it if your wiring is short and clean.
+
 ### Multiple ADS1115 boards
 
 Each board needs a unique address, set by wiring its **ADDR** pin:

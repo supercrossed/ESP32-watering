@@ -25,6 +25,10 @@ import wifi
 
 AP_IP = "192.168.4.1"
 
+# A WiFi credentials form is a few hundred bytes. Anything larger is
+# malformed or hostile and is refused rather than buffered.
+_MAX_PORTAL_BODY = 2048
+
 _PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Planter WiFi Setup</title><style>
@@ -149,15 +153,26 @@ def _handle_http(server, networks):
 
         if line.startswith("POST /save"):
             body = req.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in req else b""
-            # read any remaining body bytes
+            # Read any remaining body bytes, bounded. A credentials form is
+            # a few hundred bytes; the length is client-supplied, so an
+            # unparseable or huge Content-Length must not be trusted -
+            # buffering toward it would exhaust the heap, and int() on
+            # garbage would raise out of the handler.
             for header in req.split(b"\r\n"):
                 if header.lower().startswith(b"content-length:"):
-                    need = int(header.split(b":", 1)[1])
-                    while len(body) < need:
+                    try:
+                        need = int(header.split(b":", 1)[1].strip())
+                    except (ValueError, IndexError):
+                        need = 0
+                    if need > _MAX_PORTAL_BODY:
+                        print("portal: refusing oversized body", need)
+                        need = 0
+                    while len(body) < need and len(body) < _MAX_PORTAL_BODY:
                         chunk = cl.recv(256)
                         if not chunk:
                             break
                         body += chunk
+                    break
             fields = {}
             for pair in body.decode().split("&"):
                 if "=" in pair:

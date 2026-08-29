@@ -28,7 +28,15 @@ def read_all(ads_boards, zones, thresholds):
         board = ch // 4
         if board >= len(ads_boards):
             continue  # that board was removed - nothing to read
-        raw = ads_boards[board].read(ch % 4)
+        # Isolate each zone. A single flaky probe (a loose connector, a long
+        # run picking up noise) used to raise out of this loop and abort the
+        # whole cycle, so every zone AFTER the bad one silently went unread.
+        # An I2C error on one channel must not blind the others.
+        try:
+            raw = ads_boards[board].read(ch % 4)
+        except OSError as e:
+            print("zone {} read failed: {}".format(zone["name"], e))
+            continue
         pct = raw_to_percent(raw, zone["dry_raw"], zone["wet_raw"])
         results.append(
             {

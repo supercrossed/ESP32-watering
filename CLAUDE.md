@@ -70,7 +70,17 @@ available.
 - `state.py` — shared in-memory state (per-valve status dict keyed by valve
   name, moisture history, event log, per-schedule fired timestamps). Capped
   ring buffers.
-- `ads1x15.py` — minimal ADS1115 I2C driver (single-ended reads).
+- `ads1x15.py` — minimal ADS1115 I2C driver (single-ended reads). Blocks
+  ~9ms per channel for the conversion, and retries once on a transient
+  OSError. **The I2C bus is constructed with an explicit `timeout`**
+  (`config.I2C_TIMEOUT_US`) and pinned to 100kHz (`config.I2C_FREQ`): a
+  sensor holding SDA low would otherwise stall the transaction, and the
+  loop it stalls is the same one feeding WiFi and the valve cutoff — that
+  is the "WiFi drops once sensors are added" failure. `moisture.read_all()`
+  isolates each zone so one bad probe can't abort the cycle and blind the
+  rest, and after 3 straight failures `main.reinit_i2c()` tears down and
+  rebuilds the peripheral (re-pointing the drivers and `web.set_i2c`)
+  before falling back to the 5-minute interval.
 - `env_sensors.py` — minimal AHT20 (temp/humidity, 0x38) + BMP280
   (temp/pressure, 0x76/0x77) drivers. Both share the ADS1115s' I2C bus and
   are **auto-detected at boot** by scan — no config. Readings land in
@@ -89,11 +99,33 @@ available.
 - `valve.py` — solenoid control via IRF520 MOSFET gate pin, plus a hard
   safety cutoff (`MAX_VALVE_OPEN_SEC`) checked every loop. Multiple `Valve`
   instances exist (one per `hardware.valves` entry), each keyed by name in
-  `state.valves`.
+  `state.valves`. **The cutoff MUST use the monotonic clock**
+  (`seconds_open_monotonic`, `ticks_ms`/`ticks_diff`), never `time.time()`:
+  an NTP sync moves the wall clock, and a backward move made elapsed time
+  negative so the cutoff never fired — water running with the last safety
+  net disabled. Each slot carries both `opened_at` (wall, for display) and
+  `opened_ticks` (monotonic, for the cutoff). main.py wraps the per-valve
+  cutoff call individually and closes the valve if it raises: an exception
+  escaping the main loop ends main.py and leaves open valves open.
 - `wifi.py` — WiFi connect + reconnect helpers. Credentials live in
   `wifi.json` on flash (written by the setup portal), falling back to
   config.py. `ensure_connected()` is polled from the main loop so the
   device rejoins after a router reboot; watering keeps running offline.
+  **`isconnected()` is not a health signal** — it means *associated*, and a
+  zombie connection (expired lease, cleared NAT table, wedged lwIP) reports
+  True while nothing is reachable. `lan_healthy()` TCP-probes the GATEWAY
+  every `WIFI_HEALTH_CHECK_SEC`: any reply proves the path, **including
+  ECONNREFUSED/ECONNRESET** (a refusal is still a packet), only a timeout
+  is failure, and an unknown errno returns None and is never acted on — a
+  false positive costs a working connection. main.py escalates 1) log,
+  2) `recycle()` soft, 3) `recycle(hard=True)` which drops and re-activates
+  the interface to clear lwIP. Probing the gateway rather than the internet
+  is deliberate: the dashboard needs only the LAN, so an ISP outage must
+  never recycle a working connection. A 6h+ NTP stall with a healthy LAN
+  triggers exactly one reconnect (`NTP_STALE_RECYCLE_SEC`). Skipped while a
+  valve is open, during OTA/calibration, and while rescue owns the radio.
+  NTP resyncs hourly (`NTP_RESYNC_SEC`) — it used to stop after the first
+  success, leaving the RTC to drift for months.
 - `wifi_setup.py` — two recovery modes. (1) Blocking boot portal: if
   boot-time connect fails AND the target SSID is visible (wrong password /
   fresh kit), the device becomes an open AP ("Planter-Setup-xxxx"),
@@ -350,3 +382,12 @@ block and checked with `node --check`.
 - The web uploader accepts `.py`, `.mpy`, `.html`; saving a file DELETES
   its `.py`/`.mpy` counterpart on the device so a stale twin can never
   shadow the fresh upload.
+- **Every length that comes off the network is bounded.** `Content-Length`
+  is client-supplied: request bodies cap at `_MAX_BODY_BYTES` (16KB),
+  uploads at `_MAX_UPLOAD_BYTES` (512KB) with a `_UPLOAD_DEADLINE_SEC`
+  (120s) ceiling, portal bodies at `_MAX_PORTAL_BODY` (2KB). Unbounded
+  buffering on a ~100KB heap is a memory-exhaustion path straight to WiFi
+  failure. The upload deadline matters specifically because that loop calls
+  `_feed()` — without it, a trickling client keeps the watchdog fed forever
+  and hangs the device with its own safety net disarmed. Parse remote
+  integers with `_int_param()` / guarded `int()`, never bare.

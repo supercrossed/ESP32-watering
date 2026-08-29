@@ -46,6 +46,14 @@ def set_wdt(wdt):
     _wdt = wdt
 
 
+def set_i2c(i2c):
+    """Re-point /api/i2c/scan at a rebuilt bus. main.reinit_i2c() creates a
+    new I2C object when the bus wedges; without this the scan endpoint would
+    keep using the dead one."""
+    global _i2c
+    _i2c = i2c
+
+
 def _feed():
     if _wdt is not None:
         _wdt.feed()
@@ -166,7 +174,22 @@ def _handle(cl):
             _send(cl, 400, "text/plain", "missing multipart boundary")
             return
         content_length = _content_length(header_part)
-        saved, rejected = _stream_multipart_to_disk(cl, boundary, content_length, leftover)
+        if content_length > _MAX_UPLOAD_BYTES:
+            _send(cl, 413, "application/json", json.dumps(
+                {"ok": False, "error": "upload too large ({} bytes, max {})".format(
+                    content_length, _MAX_UPLOAD_BYTES)}))
+            return
+        try:
+            saved, rejected = _stream_multipart_to_disk(
+                cl, boundary, content_length, leftover)
+        except Exception as e:
+            # A stalled or overlong transfer aborts here rather than
+            # spinning. Whatever landed is reported so the user knows
+            # the device is in a half-updated state and can retry.
+            state.log_event("code_upload", "FAILED: {}".format(e))
+            _send(cl, 500, "application/json",
+                  json.dumps({"ok": False, "error": str(e)}))
+            return
         state.log_event("code_upload", "saved={} rejected={}".format(saved, rejected))
         _send(cl, 200, "application/json", json.dumps({"ok": True, "saved": saved, "rejected": rejected}))
         return
@@ -182,7 +205,7 @@ def _handle(cl):
         # no parameter keeps the live 3-hour RAM buffer, which is finer
         # grained (1/min vs 1/15min) and costs no file reads.
         try:
-            _hours = int(params.get("hours", 0))
+            _hours = _int_param(params, "hours", 0, lo=0)
         except ValueError:
             _hours = 0
         if _hours > 0:
@@ -203,14 +226,16 @@ def _handle(cl):
         _send(cl, 200, "application/json", json.dumps({"ok": bool(valve)}))
     elif path == "/api/water/trigger" and method == "POST":
         settings = settings_store.get()
-        duration = int(params.get("duration", settings["supplemental_duration_sec"]))
+        duration = _int_param(params, "duration",
+                              settings["supplemental_duration_sec"], lo=1)
         valve_name = params.get("valve", _default_valve_name)
         ok = _trigger_watering_cb(valve_name, duration, "manual_web") if valve_name else False
         _send(cl, 200, "application/json", json.dumps({"ok": bool(ok)}))
     elif path == "/api/water/all" and method == "POST":
         # Master quick-water: every valve runs, one at a time, in order.
         settings = settings_store.get()
-        duration = int(params.get("duration", settings["supplemental_duration_sec"]))
+        duration = _int_param(params, "duration",
+                              settings["supplemental_duration_sec"], lo=1)
         names = [v["name"] for v in settings["hardware"].get("valves", [])]
         ok = _trigger_valves_cb(names, duration, "manual_web_all") if names else False
         _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": names}))
@@ -220,7 +245,7 @@ def _handle(cl):
         settings = settings_store.get()
         zone_name = params.get("zone", "")
         if "duration" in params:
-            duration = int(params["duration"])
+            duration = _int_param(params, "duration", 60, lo=1)
         else:
             duration = settings.get("zone_durations", {}).get(zone_name) or settings["supplemental_duration_sec"]
         valve_names = settings["hardware"].get("zone_valves", {}).get(zone_name, [])
@@ -421,18 +446,61 @@ def _read_headers(cl):
     return header_part, rest
 
 
+def _int_param(params, key, default, lo=None, hi=None):
+    """Read an integer query parameter without trusting it.
+
+    Query strings are remote input: "?duration=abc" used to raise
+    ValueError straight out of the handler, so the request got no
+    response at all and the browser saw a dropped connection. Anything
+    unparseable now falls back to the default, and callers can clamp."""
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if lo is not None and v < lo:
+        v = lo
+    if hi is not None and v > hi:
+        v = hi
+    return v
+
+
 def _content_length(header_part):
-    for line in header_part.split(b"\r\n")[1:]:
+    """Parse Content-Length, tolerating a malformed value. This is remote
+    input: an unparseable header used to raise ValueError out of the
+    handler, dropping the connection with no response."""
+    for line in header_part.split(CRLF.encode())[1:]:
         if line.lower().startswith(b"content-length:"):
-            return int(line.split(b":", 1)[1].strip())
+            try:
+                n = int(line.split(b":", 1)[1].strip())
+            except (ValueError, IndexError):
+                return 0
+            return n if n > 0 else 0
     return 0
+
+
+# Every non-upload route sends a small JSON payload; the largest real one
+# (a full zones or schedules replacement) is a few KB. Anything claiming
+# more is malformed or hostile, and MUST NOT be buffered: growing a bytes
+# object toward the Content-Length a client asserts is a straight path to
+# exhausting a ~100KB heap and taking the WiFi stack down with it.
+_MAX_BODY_BYTES = 16 * 1024
 
 
 def _read_body(cl, header_part, leftover):
     """Buffer the full body in RAM - fine for the small JSON payloads every
     route except /api/upload sends. Uploads use _stream_multipart_to_disk
-    instead, which never holds more than one chunk in memory."""
+    instead, which never holds more than one chunk in memory.
+
+    Hard-capped at _MAX_BODY_BYTES: the length is client-controlled, and an
+    unbounded buffer here is a memory-exhaustion vector rather than merely
+    a slow request."""
     content_length = _content_length(header_part)
+    if content_length > _MAX_BODY_BYTES:
+        print("web: refusing oversized body ({} bytes)".format(content_length))
+        return b""
     body = leftover
     while len(body) < content_length:
         _feed()
@@ -440,6 +508,9 @@ def _read_body(cl, header_part, leftover):
         if not chunk:
             break
         body += chunk
+        if len(body) > _MAX_BODY_BYTES:
+            print("web: body exceeded cap, truncating")
+            break
     return body
 
 
@@ -474,9 +545,28 @@ def _sanitize_filename(name):
 
 
 _UPLOAD_CHUNK = 1024
+# The whole firmware is ~150KB and index.html alone is ~90KB, so half a
+# megabyte is generous. The cap matters because the upload loop calls
+# _feed() while it reads: without a bound, a client that claims a huge
+# Content-Length and trickles bytes would keep the watchdog fed forever
+# - a hang with its own safety net disarmed.
+_MAX_UPLOAD_BYTES = 512 * 1024
+# Wall-clock ceiling for one upload, for the same reason.
+_UPLOAD_DEADLINE_SEC = 120
+
+
+def _upload_feed(deadline):
+    """Feed the watchdog during an upload, but give up if the transfer
+    has overrun its deadline. Feeding unconditionally inside a loop whose
+    length a client controls would let a stalled transfer hang the device
+    indefinitely - the watchdog would never fire."""
+    if time.time() > deadline:
+        raise OSError("upload exceeded {}s deadline".format(_UPLOAD_DEADLINE_SEC))
+    _feed()
 
 
 def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
+    _deadline = time.time() + _UPLOAD_DEADLINE_SEC
     """Read a multipart/form-data body straight off the socket and write
     each file's content directly to flash as it arrives, one small chunk
     at a time. Never holds more than ~1-2KB in RAM regardless of how many
@@ -525,7 +615,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
             if idx == -1:
                 if bytes_read >= content_length:
                     break
-                _feed()
+                _upload_feed(_deadline)
                 chunk = cl.recv(_UPLOAD_CHUNK)
                 if not chunk:
                     break
@@ -540,7 +630,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
             while b"\r\n\r\n" not in buf:
                 if bytes_read >= content_length:
                     break
-                _feed()
+                _upload_feed(_deadline)
                 chunk = cl.recv(_UPLOAD_CHUNK)
                 if not chunk:
                     break
@@ -592,7 +682,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
                 # ran out of body without finding a closing boundary
                 close_current()
                 return saved, rejected
-            _feed()
+            _upload_feed(_deadline)
             chunk = cl.recv(_UPLOAD_CHUNK)
             if not chunk:
                 close_current()
@@ -796,7 +886,9 @@ def _apply_hardware_patch(params, body):
     # Legacy path: individual query-string params (old Hardware Config card).
     for key in ("i2c_scl_pin", "i2c_sda_pin"):
         if key in params:
-            hw[key] = int(params[key])
+            pin = _int_param(params, key, None, lo=0, hi=39)
+            if pin is not None:
+                hw[key] = pin
 
     zone_channels = dict(hw.get("zone_channels", {}))
     for key, val in params.items():
@@ -1132,6 +1224,9 @@ def _status_payload():
         # a visible answer right after a power cycle.
         "startup_grace_left": _startup_grace_left(),
         "time_synced": state.time_synced,
+        # True/False/None - whether the last probe actually reached the
+        # router, as opposed to merely being associated with it
+        "lan_ok": state.lan_ok,
         "wifi_connected": wifi.is_connected(),
         "env": state.env,
         "mem_free": gc.mem_free() if hasattr(gc, "mem_free") else None,

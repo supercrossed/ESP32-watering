@@ -100,6 +100,122 @@ def ensure_connected(ssid, password):
     return False
 
 
+# ---- Link health ------------------------------------------------------
+# isconnected() only reports that the radio is ASSOCIATED with an access
+# point. It says nothing about whether packets actually move: a router can
+# be up while its DHCP lease expired, its NAT table was cleared, or the
+# device's own lwIP state wedged. That "zombie" state is the one that makes
+# the dashboard unreachable while every status field still reads healthy.
+
+# Errnos that mean "the path works, the port just isn't open". A refusal or
+# a reset is a REPLY - it proves packets reached the router and came back.
+_ALIVE_ERRNOS = (
+    104,   # ECONNRESET
+    111,   # ECONNREFUSED
+    113,   # ECONNABORTED
+)
+# Errnos that mean nothing came back at all.
+_DEAD_ERRNOS = (
+    110,   # ETIMEDOUT (linux)
+    116,   # ETIMEDOUT (MicroPython/lwIP)
+    118,   # EHOSTUNREACH
+)
+
+
+def gateway():
+    """The router's IP, or None if we don't have one."""
+    try:
+        gw = network.WLAN(network.STA_IF).ifconfig()[2]
+    except (OSError, IndexError):
+        return None
+    if not gw or gw == "0.0.0.0":
+        return None
+    return gw
+
+
+def lan_healthy(timeout=3, port=80):
+    """Can we actually reach the router?
+
+    Returns True (packets flow), False (nothing came back), or None (can't
+    tell - treat as inconclusive and do NOT act on it).
+
+    Opens a TCP connection to the gateway. Success proves the path; so does
+    a refusal or reset, because those are replies. Only a timeout means the
+    link is dead, which is why the errno is inspected rather than treating
+    every OSError as failure - a router with nothing listening on port 80
+    is perfectly healthy and must not be misread as broken.
+
+    Blocks for up to `timeout` seconds, so the caller runs this on a slow
+    cadence and feeds the watchdog around it."""
+    import socket
+    gw = gateway()
+    if gw is None:
+        return None
+    s = None
+    try:
+        addr = socket.getaddrinfo(gw, port)[0][-1]
+    except Exception:
+        # getaddrinfo allocates lwIP structures and can fail under memory
+        # pressure; that is not evidence about the link.
+        return None
+    try:
+        s = socket.socket()
+        s.settimeout(timeout)
+        s.connect(addr)
+        return True
+    except OSError as e:
+        err = e.args[0] if e.args else None
+        if err in _ALIVE_ERRNOS:
+            return True
+        if err in _DEAD_ERRNOS:
+            return False
+        # Unrecognised: stay conservative. A false "dead" costs a working
+        # connection, which is worse than missing one zombie cycle.
+        return None
+    except Exception:
+        return None
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
+def recycle(ssid, password, hard=False):
+    """Tear the station connection down and bring it back.
+
+    soft (hard=False): disconnect + reconnect. Clears an expired lease or a
+    stale association.
+    hard (hard=True):  drop the interface entirely, then re-activate. This
+    is what clears a wedged lwIP/driver state that a plain reconnect leaves
+    in place.
+
+    Returns True if the reconnect completed within the timeout. Never
+    raises - a failed recycle just means we try again next cycle."""
+    wlan = network.WLAN(network.STA_IF)
+    try:
+        try:
+            wlan.disconnect()
+        except OSError:
+            pass
+        if hard:
+            wlan.active(False)
+            time.sleep(1)
+            wlan.active(True)
+            time.sleep(0.5)
+        wlan.connect(ssid, password)
+    except OSError as e:
+        print("wifi recycle failed:", e)
+        return False
+    # Give it a moment to associate, but stay well short of the watchdog.
+    for _ in range(20):          # up to ~10s
+        if wlan.isconnected():
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def portal_needed(ssid, had_saved_creds=False):
     """Decide whether a failed boot-time connect should open the captive
     setup portal.
