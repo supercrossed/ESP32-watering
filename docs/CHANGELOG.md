@@ -7,6 +7,39 @@ Notable changes, newest first. Add an entry for anything user-visible - see
 
 ## 2026-08-30
 
+### Fixed: valve pins floated for the whole boot sequence
+Until a GPIO is configured as an output it sits in the chip's power-on
+state - a floating input. A MOSFET gate left floating can drift high enough
+to partially conduct, so **a valve could sit partly open during boot**.
+
+The window was not brief: the valve objects were built *after* WiFi
+association, which takes up to 20 seconds - and if the setup portal opened
+it blocked forever, leaving the pins floating indefinitely. With the nightly
+reboot enabled this repeated every night.
+
+Valve pins are now driven to their closed state as one of the first things
+`main.py` does, before WiFi and before the portal. Pins come from
+`settings.json` (where the web UI writes them) with `config.VALVES` as a
+fallback, and active-low wiring is handled correctly. A malformed entry
+doesn't stop the others being closed.
+
+### Added: reset cause logged at boot
+The console now says why the board last restarted - power-on, EN button,
+watchdog, or software. This is the cheapest test of "is it browning out?":
+a supply collapsing under WiFi transmit peaks reports differently from a
+clean power-on, so the log answers the question directly instead of leaving
+it to inference.
+
+### Fixed: the I2C scan endpoint could freeze the web server
+`i2c.scan()` probes 128 addresses. On a healthy bus that is milliseconds,
+but on a wedged one each probe can burn the full 50ms I2C timeout - up to
+several seconds of frozen web server and delayed valve safety checks, all
+inside an HTTP handler. It is now queued and performed by the main loop,
+the same pattern already used for OTA checks and calibration; the dashboard
+polls for the result.
+
+---
+
 ### Fixed: a wedged I2C bus survived reboots and was never cleared
 The existing recovery rebuilt the I2C **peripheral**, which resets only the
 ESP32's side of the bus. It did nothing about the actual lockup mode: a

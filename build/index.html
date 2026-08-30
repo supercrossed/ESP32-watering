@@ -1775,29 +1775,23 @@ function addAdsBoard(gpio) {
 
 async function scanI2c() {
   const el = document.getElementById('pd-scan-result');
-  el.textContent = 'Scanning the I2C bus...';
+  if (el) el.textContent = 'Scanning...';
   try {
-    const res = await fetch('/api/i2c/scan');
-    const data = await res.json();
-    const found = data.found || [];
-    if (!found.length) {
-      el.textContent = 'No devices answered on the bus. Check wiring: SDA/SCL swapped, no 3V3 power, or loose ground are the usual causes.';
-      return;
+    // The device queues the scan and runs it in its main loop, so the
+    // first reply may still be the previous result. Poll until it settles.
+    let j = await (await fetch('/api/i2c/scan')).json();
+    for (let i = 0; i < 10 && j.busy; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      j = await (await fetch('/api/i2c/scan')).json();
     }
-    const configured = adsAddrs();
-    el.innerHTML = 'Answering on the bus: ' + found.map(a => {
-      const hex = '0x' + a.toString(16);
-      return configured.includes(a)
-        ? hex + ' (configured)'
-        : '<b>' + hex + ' - not configured, add it above</b>';
-    }).join(', ');
-    const missing = configured.filter(a => !found.includes(a));
-    if (missing.length) {
-      el.innerHTML += '<br>Configured but NOT answering: ' +
-        missing.map(a => '0x' + a.toString(16)).join(', ') + ' - check that board\'s wiring/ADDR strap.';
+    if (!el) return;
+    if (j.found && j.found.length) {
+      el.innerHTML = 'Found: ' + j.found.map(a => '0x' + a.toString(16)).join(', ');
+    } else {
+      el.textContent = 'No I2C devices answered. Check wiring, power and the ADDR pin.';
     }
   } catch (e) {
-    el.textContent = 'Scan failed: ' + e;
+    if (el) el.textContent = 'Scan failed: ' + e;
   }
 }
 

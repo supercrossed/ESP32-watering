@@ -268,13 +268,17 @@ def _handle(cl):
         # Live I2C bus scan - returns the address of every device that
         # answers. ADS1115 boards show up as 0x48-0x4B depending on how
         # their ADDR pin is wired. Lets the UI show what's really connected.
-        found = []
-        if _i2c is not None:
-            try:
-                found = _i2c.scan()
-            except Exception as e:
-                print("i2c scan failed:", e)
-        _send(cl, 200, "application/json", json.dumps({"found": found}))
+        # Queue it - never scan inline. See state.scan_requested for why.
+        # The response carries the previous result so a repeat call is
+        # instant, and `busy` tells the UI to poll for the fresh one.
+        if _i2c is not None and not state.scan_busy:
+            state.scan_requested = True
+        prev = state.scan_result or {}
+        _send(cl, 200, "application/json", json.dumps({
+            "found": prev.get("found", []),
+            "at": prev.get("at"),
+            "busy": state.scan_busy or state.scan_requested,
+        }))
     elif path == "/api/valves" and method == "GET":
         _send(cl, 200, "application/json", json.dumps(settings_store.get()["hardware"].get("valves", [])))
     elif path == "/api/valves" and method == "POST":

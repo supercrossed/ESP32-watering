@@ -36,6 +36,81 @@ except Exception:
     pass  # an indicator must never delay or break the boot
 
 
+def _safe_valve_pins_now():
+    """Drive every valve pin to its CLOSED state before anything else runs.
+
+    Until a Pin is configured as an output it sits in the chip's power-on
+    state - a floating input. A MOSFET gate left floating can drift high
+    enough to partially conduct, so a valve can sit partly open for the
+    whole boot sequence. That window is not short: WiFi association happens
+    before the valve objects are built and can take 20 seconds, and if the
+    setup portal opens it blocks FOREVER. With a nightly reboot enabled
+    this would repeat every single night.
+
+    Pins are read straight from settings.json (where the web UI writes
+    them), falling back to config.VALVES. Deliberately does not import
+    settings_store: this has to run before the app modules load, and a
+    plain file read costs almost nothing.
+
+    Anything unexpected here is swallowed - a boot must never fail because
+    of this, and the normal Valve objects re-assert the same state later."""
+    valves = None
+    try:
+        import ujson as _json
+        with open("settings.json") as f:
+            valves = _json.load(f).get("hardware", {}).get("valves")
+    except Exception:
+        pass
+    if not valves:
+        valves = getattr(config, "VALVES", [])
+
+    closed = 0
+    for v in valves:
+        try:
+            pin_num = v["pin"]
+            active_high = v.get("active_high", True)
+            # closed == de-energised: 0 for active-high wiring, 1 for active-low
+            Pin(pin_num, Pin.OUT, value=0 if active_high else 1)
+            closed += 1
+        except Exception as e:
+            print("could not pre-set valve pin:", e)
+    if closed:
+        print("Valve pins driven closed at boot:", closed)
+
+
+try:
+    _safe_valve_pins_now()
+except Exception as _e:
+    print("valve pin pre-set skipped:", _e)
+
+
+def _log_reset_cause():
+    """Print why the board last restarted.
+
+    This is the cheapest possible test of the 'is it browning out?'
+    question: a power-related reset reports differently from a clean
+    power-on or a watchdog timeout, so the console says outright whether
+    the supply is collapsing rather than leaving it to inference."""
+    try:
+        causes = {
+            getattr(machine, "PWRON_RESET", 1): "power-on",
+            getattr(machine, "HARD_RESET", 2): "hard reset (EN button)",
+            getattr(machine, "WDT_RESET", 3): "WATCHDOG - the main loop hung",
+            getattr(machine, "DEEPSLEEP_RESET", 4): "deep sleep wake",
+            getattr(machine, "SOFT_RESET", 5): "soft reset (machine.reset)",
+        }
+        c = machine.reset_cause()
+        print("Reset cause:", causes.get(c, "code {} - if this repeats with no "
+                                         "obvious trigger, suspect a brownout "
+                                         "(power sag)".format(c)))
+        return c
+    except Exception:
+        return None
+
+
+_log_reset_cause()
+
+
 def idf_heap():
     """(free, largest_block) of the ESP-IDF C heap - the one the WiFi,
     lwIP and I2C drivers allocate from. It is SEPARATE from the Python GC
@@ -1171,6 +1246,26 @@ while True:
         web.poll_once(timeout=0.2)
     except Exception as e:
         print("web poll error:", e)
+
+    # Dashboard-requested I2C bus scan. Runs here rather than in the HTTP
+    # handler: probing 128 addresses on a wedged bus can take seconds, and
+    # that would freeze the web server and delay the valve safety checks.
+    if state.scan_requested:
+        state.scan_requested = False
+        state.scan_busy = True
+        try:
+            if wdt:
+                wdt.feed()
+            found = i2c.scan()
+            state.scan_result = {"found": list(found), "at": time.time()}
+            print("i2c scan:", [hex(a) for a in found])
+        except Exception as e:
+            state.scan_result = {"found": [], "at": time.time(), "error": str(e)}
+            print("i2c scan failed:", e)
+        finally:
+            state.scan_busy = False
+            if wdt:
+                wdt.feed()
 
     # Dashboard-requested sensor calibration. Like the update check below,
     # this runs in the loop rather than the HTTP handler - averaging a probe

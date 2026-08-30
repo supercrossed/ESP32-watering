@@ -60,6 +60,18 @@ available.
 - Files run on the device: `main.py` auto-runs at boot. Changing pin/hardware
   objects (I2C, valve Pin) requires a **reboot** to take effect because they
   are constructed once at boot.
+- **Valve pins are driven closed FIRST**, before WiFi and before the setup
+  portal (`_safe_valve_pins_now`). An unconfigured GPIO is a floating input
+  and a floating MOSFET gate can partially conduct, so a valve would sit
+  part-open for the whole boot — up to 20s for WiFi association, or forever
+  if the portal opens. Pins are read straight from `settings.json` (no
+  module imports, this runs before the app loads) with `config.VALVES` as
+  fallback; active-low wiring drives HIGH to stay closed.
+- **Anything slow belongs in the main loop, never an HTTP handler.** OTA
+  checks, calibration captures and I2C bus scans are all queued via
+  `state.*_requested` and performed by the loop, because blocking inside
+  `poll_once()` freezes the web server AND delays the valve safety cutoff.
+  `machine.reset_cause()` is logged at boot — the cheapest brownout test.
 
 ## Architecture
 

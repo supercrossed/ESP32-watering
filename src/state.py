@@ -134,6 +134,15 @@ calibration_requested = None   # None | {"zone": name, "point": "dry"|"wet"}
 calibration_busy = False
 calibration_result = None      # last capture, for the dashboard to display
 
+# ---- I2C bus scan ----
+# scan() probes 128 addresses. On a healthy bus that is milliseconds, but on
+# a wedged one each probe can burn the full I2C timeout - seconds of frozen
+# web server and delayed valve checks if it ran in the HTTP handler. So the
+# dashboard queues it and the main loop performs it, same as calibration.
+scan_requested = False
+scan_busy = False
+scan_result = None      # last {found: [...], at: ts}
+
 _events = []
 _moisture_history = []
 

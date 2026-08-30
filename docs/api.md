@@ -144,7 +144,16 @@ A `spread` over ~400 means the probe hadn't settled. See
 [setup.md](setup.md#calibrating-a-moisture-sensor).
 
 ### `GET /api/i2c/scan`
-Live bus scan: `{"found": [72, 73]}` (decimal; 0x48 = 72).
+Queues a bus scan and returns the **previous** result plus a `busy` flag:
+
+```json
+{"found": [72, 73], "at": 1756000000, "busy": true}
+```
+
+(decimal; 0x48 = 72). Poll until `busy` is false for the fresh result. The
+scan runs in the main loop, not the handler - probing 128 addresses on a
+wedged bus can take seconds, which would freeze the web server and delay
+valve safety checks.
 
 ---
 
