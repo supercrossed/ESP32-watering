@@ -1227,6 +1227,7 @@ def _status_payload():
         # True/False/None - whether the last probe actually reached the
         # router, as opposed to merely being associated with it
         "lan_ok": state.lan_ok,
+        "rssi": state.rssi,
         "wifi_connected": wifi.is_connected(),
         "env": state.env,
         "mem_free": gc.mem_free() if hasattr(gc, "mem_free") else None,

@@ -378,6 +378,7 @@ table.pintable tr.inputonly td.status { color: var(--amber-text); font-weight: 6
       <div class="kv-row" id="status-grace-row" style="display:none"><span class="k">Startup</span><span id="status-grace">-</span></div>
       <div class="kv-row"><span class="k">Clock</span><span id="status-clock">-</span></div>
       <div class="kv-row"><span class="k">WiFi</span><span id="status-wifi">-</span></div>
+      <div class="kv-row"><span class="k">Signal</span><span id="status-rssi">-</span></div>
       <div class="kv-row"><span class="k">CPU load</span><span id="status-cpu">-</span></div>
       <div class="kv-row"><span class="k">Memory</span><span id="status-mem">-</span></div>
       <p class="small" style="margin-top:6px">Water used fills in once a flow meter is wired to a valve.</p>
@@ -814,6 +815,20 @@ async function refresh() {
   document.getElementById('status-mem').textContent = memTotal
     ? Math.round(100 * s.mem_alloc / memTotal) + '% used, ' + Math.round(s.mem_free / 1024) + ' KB free' + (s.mem_free < 20480 ? ' - LOW' : '')
     : (s.mem_free != null ? Math.round(s.mem_free / 1024) + ' KB free' : '-');
+  // Signal strength, with a plain-language grade - a weak signal is a
+  // common cause of "the dashboard is slow/unreachable" that looks like a
+  // firmware fault.
+  const rssiEl = document.getElementById('status-rssi');
+  if (s.rssi == null) {
+    rssiEl.textContent = '-';
+  } else {
+    let grade = 'excellent';
+    if (s.rssi < -80) grade = 'very weak - move it closer or add an antenna';
+    else if (s.rssi < -70) grade = 'weak';
+    else if (s.rssi < -60) grade = 'good';
+    rssiEl.textContent = s.rssi + ' dBm (' + grade + ')';
+  }
+
   document.getElementById('status-cpu').textContent = s.cpu_percent != null
     ? '~' + s.cpu_percent + '%'
     : '-';

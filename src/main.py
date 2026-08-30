@@ -124,6 +124,80 @@ try_ntp_sync()
 settings_store.load(config)
 hw = settings_store.get()["hardware"]
 
+def i2c_bus_recover(scl_pin, sda_pin):
+    """Unstick an I2C bus where a slave is holding SDA low.
+
+    THE FAILURE THIS FIXES, which rebuilding the peripheral does NOT:
+    if the master stops mid-transaction - a watchdog reboot, the nightly
+    maintenance reboot, or a brownout - the slave can be left part-way
+    through clocking out a byte, holding SDA low and waiting for more
+    clocks that never come. The bus is then wedged for EVERY device on it.
+
+    Deinit/re-init only resets the ESP32 side. The slave is still clamping
+    SDA, so the fresh peripheral sees a busy bus and every transaction
+    fails - permanently, until the sensor loses power. That is why this has
+    to run at BOOT as well as during recovery: the reboot that was supposed
+    to fix things is itself what leaves the bus stuck.
+
+    The fix is the standard bus-clear: bit-bang up to 9 clock pulses (one
+    byte plus ACK) to walk the slave through whatever it was sending until
+    it releases SDA, then issue a manual STOP.
+
+    Returns True if it recovered a stuck bus, False if nothing was wrong or
+    it could not be freed."""
+    try:
+        sda = Pin(sda_pin, Pin.IN, Pin.PULL_UP)
+        if sda.value():
+            return False          # SDA is high - bus is idle, leave it alone
+
+        print("I2C: SDA held low, clocking the bus free...")
+        scl = Pin(scl_pin, Pin.OUT, value=1)
+        freed = False
+        for _ in range(9):        # 8 data bits + ACK
+            scl.value(0)
+            time.sleep_us(5)      # ~100kHz
+            scl.value(1)
+            time.sleep_us(5)
+            if sda.value():
+                freed = True
+                break
+
+        # Manual STOP: with SCL high, drive SDA low then release it. This
+        # leaves every slave in a defined idle state.
+        try:
+            sda_out = Pin(sda_pin, Pin.OUT, value=0)
+            time.sleep_us(5)
+            scl.value(1)
+            time.sleep_us(5)
+            sda_out.value(1)
+            time.sleep_us(5)
+        except Exception:
+            pass
+
+        # Hand the pins back as inputs so I2C() can claim them cleanly.
+        Pin(sda_pin, Pin.IN, Pin.PULL_UP)
+        Pin(scl_pin, Pin.IN, Pin.PULL_UP)
+        time.sleep_ms(10)
+
+        if freed:
+            print("I2C: bus recovered")
+        else:
+            print("I2C: bus still held low after 9 clocks - check wiring/power")
+        return freed
+    except Exception as e:
+        print("I2C bus recovery failed:", e)
+        return False
+
+
+# Clear a bus left wedged by an unclean stop (see i2c_bus_recover). This
+# runs BEFORE the peripheral is created: if the last boot ended mid-
+# transaction, the sensor is still holding SDA and the I2C object would be
+# born onto a dead bus.
+try:
+    i2c_bus_recover(hw["i2c_scl_pin"], hw["i2c_sda_pin"])
+except Exception as _e:
+    print("I2C pre-init recovery skipped:", _e)
+
 # I2C bus. The timeout is the important argument here: without a bound, a
 # sensor that holds SDA low - a real possibility with capacitive probes on
 # long garden wiring, or a marginal connector - stalls the transaction, and
@@ -444,6 +518,10 @@ def reinit_i2c():
         except (AttributeError, OSError):
             pass  # not every port implements deinit
         time.sleep_ms(50)
+        # Rebuilding the peripheral only resets OUR side. If a slave is
+        # holding SDA low the new bus is dead on arrival, so clock it free
+        # first.
+        i2c_bus_recover(hw["i2c_scl_pin"], hw["i2c_sda_pin"])
         i2c = I2C(
             0,
             scl=Pin(hw["i2c_scl_pin"]),
@@ -1209,11 +1287,18 @@ while True:
         state.cpu_percent = max(0, min(100, round(100 * (window - idle) / window)))
         last_load_calc = tms
         state.idf_free, state.idf_largest = idf_heap()
+        try:
+            state.rssi = wifi.rssi()
+        except Exception:
+            state.rssi = None
         if now - last_idf_print >= 60:
             last_idf_print = now
+            # RSSI sits alongside the heap figures deliberately: together
+            # they say whether a WiFi problem is memory, RF, or neither.
             print("IDF C-heap free:", state.idf_free,
                   "largest block:", state.idf_largest,
-                  "| GC free:", gc.mem_free())
+                  "| GC free:", gc.mem_free(),
+                  "| RSSI:", state.rssi)
 
     # optional nightly maintenance reboot (config.DAILY_REBOOT_HOUR):
     # valves close on boot, so a quiet-hour reboot is invisible and wipes

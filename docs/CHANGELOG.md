@@ -5,6 +5,46 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-08-30
+
+### Fixed: a wedged I2C bus survived reboots and was never cleared
+The existing recovery rebuilt the I2C **peripheral**, which resets only the
+ESP32's side of the bus. It did nothing about the actual lockup mode: a
+slave left holding **SDA low**.
+
+That happens whenever the master stops mid-transaction - a watchdog reboot,
+the nightly maintenance reboot, or a brownout. The ADS1115 is left part-way
+through clocking out a byte, waiting for clocks that never come, and it
+clamps SDA. Every device on the bus is then wedged, the freshly-built
+peripheral sees a busy bus, and **every transaction fails permanently until
+the sensor loses power**. The reboot meant to fix things is what causes it.
+
+The standard bus-clear is now implemented (`i2c_bus_recover`): bit-bang up
+to 9 clock pulses - one byte plus ACK - to walk the stuck slave through
+whatever it was sending until it releases SDA, then issue a manual STOP.
+
+Crucially it runs **at boot, before the I2C object is created**, not only
+during recovery - otherwise the bus is dead from the first transaction. It
+also runs inside `reinit_i2c()` between the deinit and the rebuild. A
+healthy bus (SDA already high) is left completely untouched.
+
+If SDA is still low after 9 clocks the console says so, which points at
+wiring or power rather than a stuck slave:
+
+```
+I2C: SDA held low, clocking the bus free...
+I2C: bus still held low after 9 clocks - check wiring/power
+```
+
+### Added: WiFi signal strength (RSSI) logging
+RSSI now appears in the once-a-minute console line and in the dashboard's
+System Status card, because it distinguishes two faults that look identical
+from outside: if signal *drops* when sensors are attached, the wiring is
+coupling noise into the radio or detuning the antenna; if it stays strong
+and WiFi still fails, the problem is power or memory, not RF.
+
+---
+
 ## 2026-08-29
 
 ### Added: link health checks - detecting a "zombie" WiFi connection

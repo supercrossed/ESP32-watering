@@ -183,6 +183,44 @@ now uses the monotonic `ticks_ms()` clock, which no clock change affects.
 
 ---
 
+## I2C dead after a reboot / every read fails once sensors are attached
+
+An I2C slave that was interrupted mid-transaction holds **SDA low** waiting
+for clocks that never arrive. That wedges the bus for every device on it,
+and it survives a reboot - rebuilding the peripheral only resets the ESP32
+side, so the new bus is dead on arrival. The trigger is any unclean stop:
+the watchdog firing, the nightly reboot, or a brownout.
+
+**Handled automatically in current versions.** At boot, before the I2C
+object is created, the firmware checks whether SDA is being held low and if
+so clocks the bus free. Watch for:
+
+```
+I2C: SDA held low, clocking the bus free...
+I2C: bus recovered
+```
+
+If instead you see:
+
+```
+I2C: bus still held low after 9 clocks - check wiring/power
+```
+
+the line is held low by something a bus-clear cannot fix - a short, a
+failed sensor, or a sensor browning out. Check wiring and the 3.3V rail.
+
+**If the problem only appears with sensors connected**, also check
+`RSSI` in the once-a-minute console line:
+
+- Signal **drops** with sensors attached -> the wiring is coupling noise
+  into the radio, or an external antenna is sitting against the sensor run
+- Signal **stays strong** but WiFi still fails -> power. Capacitive probes
+  draw ~5mA each continuously while WiFi transmit peaks at 250-350mA; a
+  marginal 3.3V rail sags during transmit. Power the sensors from a
+  separate supply sharing only ground to confirm.
+
+---
+
 ## Dashboard unreachable but the device says WiFi is connected
 
 This is a **zombie connection**: the radio is associated with the access

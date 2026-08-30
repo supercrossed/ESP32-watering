@@ -78,6 +78,21 @@ def connect(ssid, password, timeout_sec=20):
     return cfg[0]
 
 
+def rssi():
+    """Signal strength in dBm, or None.
+
+    Worth logging because it separates two very different faults that look
+    identical from the outside. If WiFi degrades when sensors are attached
+    and RSSI *drops*, the sensor wiring is coupling noise into the radio or
+    detuning the antenna. If RSSI stays strong and the link still fails,
+    the radio is fine and the problem is power (the WiFi PA browning out
+    during transmit) or memory - not RF."""
+    try:
+        return network.WLAN(network.STA_IF).status("rssi")
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 def is_connected():
     try:
         return network.WLAN(network.STA_IF).isconnected()

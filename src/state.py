@@ -102,13 +102,16 @@ cpu_percent = None
 # bytes and largest contiguous block, sampled by main.py. When this heap
 # runs out, WiFi/I2C start failing ("fail to alloc timer", "command link
 # malloc error") even though gc.mem_free() looks fine.
+idf_free = None
+idf_largest = None
+
 # Last link-health probe result (see wifi.lan_healthy): True = packets
 # reach the gateway, False = associated but nothing comes back ("zombie"),
 # None = not probed yet.
 lan_ok = None
-
-idf_free = None
-idf_largest = None
+# Signal strength in dBm, sampled with the heap figures. Roughly: -50 is
+# excellent, -70 usable, below -80 marginal and packet loss climbs fast.
+rssi = None
 
 # ---- OTA update status (see updater.py) ----
 last_update_check = None    # unix ts of the last successful manifest fetch

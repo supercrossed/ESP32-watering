@@ -72,7 +72,16 @@ available.
   ring buffers.
 - `ads1x15.py` — minimal ADS1115 I2C driver (single-ended reads). Blocks
   ~9ms per channel for the conversion, and retries once on a transient
-  OSError. **The I2C bus is constructed with an explicit `timeout`**
+  OSError.
+  **I2C lockup recovery**: a slave interrupted mid-transaction holds SDA
+  low and wedges the bus for everything on it — and this SURVIVES A REBOOT,
+  because rebuilding the peripheral resets only the master. Any unclean
+  stop causes it (watchdog, nightly reboot, brownout).
+  `main.i2c_bus_recover()` does the standard bus-clear: up to 9 bit-banged
+  SCL pulses to walk the slave through its remaining bits, then a manual
+  STOP. It runs **at boot before `I2C()` is constructed** (otherwise the
+  bus is dead from the first transaction) and inside `reinit_i2c()` between
+  the deinit and the rebuild. A healthy bus (SDA high) is left untouched. **The I2C bus is constructed with an explicit `timeout`**
   (`config.I2C_TIMEOUT_US`) and pinned to 100kHz (`config.I2C_FREQ`): a
   sensor holding SDA low would otherwise stall the transaction, and the
   loop it stalls is the same one feeding WiFi and the valve cutoff — that
