@@ -211,47 +211,60 @@ def i2c_bus_recover(scl_pin, sda_pin):
     Deinit/re-init only resets the ESP32 side. The slave is still clamping
     SDA, so the fresh peripheral sees a busy bus and every transaction
     fails - permanently, until the sensor loses power. That is why this has
-    to run at BOOT as well as during recovery: the reboot that was supposed
-    to fix things is itself what leaves the bus stuck.
+    to run at BOOT as well as during recovery.
 
-    The fix is the standard bus-clear: bit-bang up to 9 clock pulses (one
-    byte plus ACK) to walk the slave through whatever it was sending until
-    it releases SDA, then issue a manual STOP.
+    The fix is the standard bus-clear: up to 9 clock pulses (one byte plus
+    ACK) to walk the slave through whatever it was sending until it
+    releases SDA, then a STOP.
+
+    OPEN-DRAIN DISCIPLINE IS MANDATORY HERE. I2C lines are only ever pulled
+    LOW; the pull-up resistor is what makes them high. Driving a line high
+    push-pull while a slave is holding it low shorts the ESP32's output
+    driver into the slave's conducting transistor - tens of mA, a sagging
+    3.3V rail, and the WiFi radio browning out. So "high" is emulated by
+    releasing the pin to an input and letting the pull-up win.
 
     Returns True if it recovered a stuck bus, False if nothing was wrong or
     it could not be freed."""
+    if not getattr(config, "I2C_BUS_RECOVERY", True):
+        return False
     try:
-        sda = Pin(sda_pin, Pin.IN, Pin.PULL_UP)
+        # Open-drain helpers: LOW = drive it, HIGH = release and let the
+        # pull-up raise it. Never Pin.OUT with value 1 on an I2C line.
+        def release(pin_num):
+            return Pin(pin_num, Pin.IN, Pin.PULL_UP)
+
+        def drive_low(pin_num):
+            return Pin(pin_num, Pin.OUT, value=0)
+
+        sda = release(sda_pin)
         if sda.value():
             return False          # SDA is high - bus is idle, leave it alone
 
         print("I2C: SDA held low, clocking the bus free...")
-        scl = Pin(scl_pin, Pin.OUT, value=1)
+        release(scl_pin)          # start with the clock released (high)
         freed = False
         for _ in range(9):        # 8 data bits + ACK
-            scl.value(0)
+            drive_low(scl_pin)
             time.sleep_us(5)      # ~100kHz
-            scl.value(1)
+            release(scl_pin)      # let the pull-up raise SCL, never drive it
             time.sleep_us(5)
             if sda.value():
                 freed = True
                 break
 
-        # Manual STOP: with SCL high, drive SDA low then release it. This
-        # leaves every slave in a defined idle state.
-        try:
-            sda_out = Pin(sda_pin, Pin.OUT, value=0)
-            time.sleep_us(5)
-            scl.value(1)
-            time.sleep_us(5)
-            sda_out.value(1)
-            time.sleep_us(5)
-        except Exception:
-            pass
+        # STOP condition: SDA rises while SCL is high. Again by releasing,
+        # not driving.
+        drive_low(sda_pin)
+        time.sleep_us(5)
+        release(scl_pin)
+        time.sleep_us(5)
+        release(sda_pin)
+        time.sleep_us(5)
 
-        # Hand the pins back as inputs so I2C() can claim them cleanly.
-        Pin(sda_pin, Pin.IN, Pin.PULL_UP)
-        Pin(scl_pin, Pin.IN, Pin.PULL_UP)
+        # Leave both released so I2C() can claim them cleanly.
+        release(sda_pin)
+        release(scl_pin)
         time.sleep_ms(10)
 
         if freed:
@@ -261,13 +274,15 @@ def i2c_bus_recover(scl_pin, sda_pin):
         return freed
     except Exception as e:
         print("I2C bus recovery failed:", e)
+        # Make sure nothing is left driving the bus on the way out.
+        try:
+            Pin(sda_pin, Pin.IN, Pin.PULL_UP)
+            Pin(scl_pin, Pin.IN, Pin.PULL_UP)
+        except Exception:
+            pass
         return False
 
 
-# Clear a bus left wedged by an unclean stop (see i2c_bus_recover). This
-# runs BEFORE the peripheral is created: if the last boot ended mid-
-# transaction, the sensor is still holding SDA and the I2C object would be
-# born onto a dead bus.
 try:
     i2c_bus_recover(hw["i2c_scl_pin"], hw["i2c_sda_pin"])
 except Exception as _e:

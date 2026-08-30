@@ -128,6 +128,27 @@ MOSFET OUT+ / OUT-   ----> Solenoid valve
 1N4007 across the solenoid terminals, band toward +
 ```
 
+### Gate pull-down resistor
+
+**Recommended: 10k from the MOSFET module's signal/gate pin to GND.**
+
+An ESP32 GPIO is a floating input until the firmware configures it as an
+output. A floating MOSFET gate can drift high enough to partially conduct,
+so a valve can sit part-open whenever the pin is not being driven:
+
+- during the first moments of boot, before the firmware runs
+- if the signal wire works loose or a connector corrodes outdoors
+- while the board is held in reset
+
+The firmware closes this window in software - valve pins are driven to their
+closed state as one of the very first things `main.py` does, before WiFi and
+before the setup portal. But software cannot help before it is running, and
+it cannot help at all if the wire falls off. A resistor can.
+
+Many D4184 / XY-MOS modules already include one; check for a resistor
+between the signal pin and GND before adding your own. If in doubt, adding a
+10k in parallel with an existing pull-down is harmless.
+
 ### The flyback diode
 
 **Do not skip this.** When a solenoid closes, its collapsing magnetic field
@@ -151,6 +172,26 @@ is almost certainly the cause - see
 [troubleshooting](troubleshooting.md#valve-wont-open).
 
 ---
+
+## Where resistors are needed
+
+| Connection | Resistor | Why |
+|---|---|---|
+| **I2C SDA / SCL** | 10k pull-up to 3.3V, **one set for the whole bus** | I2C is open-drain - devices only pull LOW, so without a pull-up the line never returns high. Usually already on the ADS1115 breakout |
+| **MOSFET gate** | 10k pull-down to GND | Keeps a valve closed while the GPIO floats (boot, reset, broken wire). See [above](#gate-pull-down-resistor) |
+| **Solenoid** | 1N4007 diode (not a resistor) | Absorbs the inductive spike. **Required** |
+| **Flow meter (YF-S201)** | 10k pull-up to 3.3V | Open-collector Hall output. **Mandatory if wired to GPIO 34-39** - those pins have no internal pull-ups at all |
+| **LM393 rain sensor** | none | Push-pull comparator output; the firmware enables the ESP32's internal pull-up anyway |
+| **Moisture sensor AOUT** | none | Analog voltage into the ADS1115 |
+
+**On the ESP32's internal pull-ups:** they exist but are weak (~45k). That
+is fine for a rain sensor's digital output and useless for I2C - a 45k
+pull-up gives slow rise times that work on a 10cm jumper and fail on a
+garden run. **Do not rely on internal pull-ups for I2C.** If your ADS1115
+breakout has no pull-up resistors, fit 4.7k-10k externally.
+
+Note the two are opposites and easy to confuse: I2C wants pull-**ups** to
+3.3V; a MOSFET gate wants a pull-**down** to ground.
 
 ## Optional sensors
 

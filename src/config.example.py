@@ -134,6 +134,13 @@ WATCHDOG_TIMEOUT_SEC = 120
 # the dashboard at http://192.168.4.1 to fix the network. 0 disables.
 WIFI_RESCUE_AFTER_SEC = 300
 
+# Clock a wedged I2C bus free at boot (a slave interrupted mid-transaction
+# holds SDA low and the bus stays dead even across a reboot). Uses proper
+# open-drain signalling - it only ever pulls lines LOW and lets the pull-up
+# raise them, because driving a held-low line high shorts into the slave
+# and sags the 3.3V rail. Set False to disable entirely.
+I2C_BUS_RECOVERY = True
+
 # ---- Link health ----
 # isconnected() only means the radio is ASSOCIATED. A router whose DHCP
 # lease expired, whose NAT table was cleared, or a wedged lwIP state on our

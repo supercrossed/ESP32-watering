@@ -1,6 +1,6 @@
 {
-    "version":  "2026.08.30.1828",
-    "generated":  "2026-08-30T18:28:12.8838966-04:00",
+    "version":  "2026.08.30.1853",
+    "generated":  "2026-08-30T18:53:32.1222669-04:00",
     "files":  {
                   "web.mpy":  {
                                   "sha256":  "6d18cbc7401adc435cda2f98cfcfc176e6f2d4a1035adc69d35aca3ca4ae0ba1",
@@ -28,8 +28,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "de3c7c7b2ea01acc1d9197ea749359b503af2af641ed914f77aa075cbfaff1b8",
-                                  "size":  59896,
+                                  "sha256":  "d0801e45960596367eda57cbdc763da83e3519c8d72ddff2b7f9f18b29c4d49b",
+                                  "size":  60484,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
