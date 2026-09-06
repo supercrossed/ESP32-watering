@@ -1,10 +1,10 @@
 {
-    "version":  "2026.09.06.0133",
-    "generated":  "2026-09-06T01:33:31.2144610-04:00",
+    "version":  "2026.09.06.1417",
+    "generated":  "2026-09-06T14:17:05.7093905-04:00",
     "files":  {
                   "web.mpy":  {
-                                  "sha256":  "926ec213147e0539ccc8cc7fca448f5c2690a6d7ad548a3eb630939955b50f04",
-                                  "size":  19812,
+                                  "sha256":  "5df6a6901b6c4b9f14d1aa3a02a41ea1041dda09e4c6f55431116b208559ab12",
+                                  "size":  20917,
                                   "path":  "build/web.mpy"
                               },
                   "valve.mpy":  {
@@ -33,8 +33,8 @@
                                           "path":  "build/env_sensors.mpy"
                                       },
                   "main.py":  {
-                                  "sha256":  "36ea80a007fd8a734a8b082b586412978cec4f6b72fa5b8c1a956f42254c2a3a",
-                                  "size":  60103,
+                                  "sha256":  "e3437e0689c822354a0d2a41a82ffd9aaf4f8e12aede56a71bd89c13fb5ebad4",
+                                  "size":  62451,
                                   "path":  "build/main.py"
                               },
                   "updater.mpy":  {
