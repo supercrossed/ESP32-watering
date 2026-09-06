@@ -228,9 +228,12 @@ So the fault is in MicroPython/lwIP on this platform, not in this project.
 Rewriting `web.py` or `main.py` will not fix it - two full server
 architectures have already been tried.
 
-What this means in practice: normal single-tab use is fine, and a stall
-clears itself in tens of seconds. Two tabs, or repeated fast refreshes,
-can provoke it. The watchdog and the nightly reboot both remain as
+What this means in practice: a stall clears itself in tens of seconds to a
+few minutes. **The trigger is not understood** - it is intermittent and
+happens under light load too. A same-device A/B of poll-only versus
+poll-plus-refresh (3 minutes each) gave 8 failures / 1 reboot for poll-only
+and 1 failure / 1 reboot for poll-plus-refresh, so refreshes are NOT a
+reliable trigger, despite an earlier run suggesting they were. The watchdog and the nightly reboot both remain as
 backstops, and valves close on boot, so watering is never at risk.
 
 Next step is to reproduce it on a stock MicroPython build with no

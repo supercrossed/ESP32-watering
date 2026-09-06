@@ -471,14 +471,16 @@ block and checked with `node --check`.
   threshold is deliberately far below normal operation - an earlier value
   of 8192 sat exactly at one board's degraded steady state and refused
   nearly everything, doing more harm than the condition it guarded.
-- **KNOWN, NOT OURS: the listener stalls under page-load traffic.** The
+- **KNOWN, NOT OURS: the listener stalls intermittently.** The
   device stops accepting for tens of seconds while staying healthy (loop
   cycling, watchdog fed, 8MB free, answering pings), then recovers by
   itself. **Do not try to fix this in web.py or main.py.** It has been
   isolated: `tools/minimal_server_repro.py` is a ~40 line server with none
   of this firmware in it - no watchdog, I2C, LED, flash writes, streaming
   or keep-alive - and it reproduces the stall exactly. The fault is in
-  MicroPython/lwIP on this platform.
+  MicroPython/lwIP on this platform. The trigger is NOT understood and is
+  not reliably tied to refresh rate - it happens under light polling too.
+  Full brief: docs/listener-stall-handoff.md
   Already tried and measured as no help: an asyncio server (task per
   connection), the ESP32-S3 with 260x the C heap, keep-alive (26 requests
   per socket instead of 11 sockets per page), and rebuilding the listening

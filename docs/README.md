@@ -14,6 +14,7 @@ Everything beyond the quick start on the [main page](../README.md).
 | **[API reference](api.md)** | Every HTTP endpoint with parameters |
 | **[Development](development.md)** | Architecture, the two-heap memory problem, coding constraints, testing |
 | **[Troubleshooting](troubleshooting.md)** | Symptoms, causes, fixes |
+| **[Listener stall handoff](listener-stall-handoff.md)** | Self-contained brief on the web-server stall: what it is, what has been ruled out, and why it is not this firmware |
 | **[asyncio server port](asyncio-server.md)** | The one open reliability bug: concurrent connections hang the main loop, and the plan to fix it |
 
 ## Quick answers
