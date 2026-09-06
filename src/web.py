@@ -1,7 +1,7 @@
 # web.py
 # Lightweight synchronous HTTP server (no external deps) serving a
 # dashboard page and a small JSON API. Designed to be polled from the
-# main loop via poll_once() so it never blocks moisture checks or the
+# event loop as one task per connection, so a slow client never blocks the
 # daily schedule.
 #
 # The dashboard page itself lives in index.html on flash, not as a Python
@@ -11,7 +11,7 @@
 # GET / streams index.html straight off the filesystem in small chunks.
 
 import socket
-import select
+import asyncio
 import ujson as json
 import time
 import machine
@@ -26,7 +26,6 @@ import wifi
 INDEX_HTML_PATH = "index.html"
 CRLF = "\r\n"
 
-_server_sock = None
 _valves = {}  # injected by main.py: dict of valve name -> Valve
 _trigger_watering_cb = None  # injected by main.py: fn(valve_name, duration_sec, reason)
 _trigger_valves_cb = None  # injected by main.py: fn(valve_names, duration_sec, reason) - sequential
@@ -60,233 +59,233 @@ def _feed():
 
 
 def init(valves, trigger_watering_cb, trigger_valves_cb, default_valve_name, i2c=None):
-    global _server_sock, _valves, _trigger_watering_cb, _trigger_valves_cb, _default_valve_name, _i2c
+    global _valves, _trigger_watering_cb, _trigger_valves_cb, _default_valve_name, _i2c
     _valves = valves
     _trigger_watering_cb = trigger_watering_cb
     _trigger_valves_cb = trigger_valves_cb
     _default_valve_name = default_valve_name
     _i2c = i2c
+    # The server is started by main.py with `await web.start_server()`;
+    # it cannot be started from synchronous code any more.
 
-    start_server()
+
+# A request may hold its own task this long before being dropped. It no
+# longer bounds anything but that ONE connection: under the old inline
+# server this same limit was the length of time a single dead client could
+# freeze the entire device, valve cutoff included.
+_CONN_TIMEOUT_SEC = 10
+
+# HTTP/1.1 is persistent unless told otherwise, so this is really just
+# being explicit for old clients and proxies.
+_CONN_HEADER = "Connection: keep-alive"
+
+# Ceilings on a reused connection. Not for safety of the connection itself
+# but so a client cannot pin one of lwIP's limited netconns forever: a
+# whole dashboard load is 11 requests, so 50 is generous, and 15s of
+# silence means the tab is gone.
+_KEEPALIVE_MAX_REQUESTS = 50
+_KEEPALIVE_IDLE_SEC = 15
+
+# How often the accept loop looks for a new connection when idle. 20ms is
+# imperceptible next to a LAN round trip and keeps the loop cheap.
+_ACCEPT_POLL_MS = 20
 
 
-def start_server():
-    """Bind and listen on port 80. Separate from init() so main.py can
-    retry it from the loop if it fails at boot (e.g. lwIP OSError -203) -
-    a web server hiccup must never take down the watering controller.
-    No getaddrinfo: it allocates lwIP DNS structures that can fail with
-    EAI_MEMORY (-203), and bind() takes a numeric (ip, port) tuple directly."""
-    global _server_sock
-    if _server_sock is not None:
-        return True
-    gc.collect()
-    s = socket.socket()
+
+async def _close(cl):
+    """Close a client connection without ever blocking the event loop."""
     try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("0.0.0.0", 80))
-        s.listen(3)
-        s.setblocking(False)
-    except OSError as e:
-        try:
-            s.close()
-        except OSError:
-            pass
-        print("web server start failed:", e)
-        return False
-    _server_sock = s
-    print("Web server listening on port 80")
-    return True
-
-
-# A LAN request completes in tens of milliseconds. Eight seconds was far
-# too generous: a client that opened a connection and went away (a closed
-# tab, a timed-out fetch) held the whole main loop for that long, and the
-# dashboard's 5s polling then queued faster than the device could drain.
-# Three seconds still leaves ample room to stream the ~100KB dashboard to a
-# slow client, while bounding what one dead connection can cost.
-# Bytes handed to a single send() call. One TCP segment's worth keeps
-# each write small and predictable.
-# Bytes per socket write. MEASURED, not chosen for tidiness: on this board
-# a single send() of 1024 bytes blocks until the socket timeout fires,
-# while 512 goes out in milliseconds. The endpoint sweep was unambiguous -
-# every response up to 947 bytes returned in under 0.7s and every response
-# from 1025 bytes up failed, because the first flush was the one 1024-byte
-# write. It is not memory: the C heap had 32560 bytes free with a
-# 29696-byte largest block at the moment it stalled.
-#
-# The signature is a write that cannot be queued in one piece - lwIP's send
-# buffer is around a segment, so a 1024-byte write plus the 92-byte header
-# already in flight does not fit, and the write waits rather than doing a
-# partial one. 512 always fits. Throughput is unaffected (the 6.2KB pin map
-# serves in 0.30s either way) because this bounds the write size, not the
-# window.
-_SEND_CHUNK = 512
-_CONN_TIMEOUT_SEC = 3.0
-# Requests handled per poll_once() call, and the wall-clock ceiling for the
-# whole batch.
-_MAX_CONNS_PER_POLL = 4
-_POLL_BUDGET_MS = 1200
-
-
-# Time spent waiting in select() is the system's idle time - everything
-# else is work. main.py reads this every few seconds to compute the
-# "CPU load" figure shown in the dashboard.
-_idle_ms = 0
-
-
-def take_idle_ms():
-    global _idle_ms
-    v = _idle_ms
-    _idle_ms = 0
-    return v
-
-
-# Refuse work below this much contiguous ESP-IDF C heap (the heap lwIP
-# takes its TCP buffers from - NOT the Python GC heap).
-#
-# Why this exists: with a single client the server is stable indefinitely -
-# 220 requests across 20 full page loads with the heap flat. With TWO
-# clients (a browser open while something else polls) connections overlap,
-# and a client that gives up mid-response leaves lwIP retransmitting to
-# nobody, holding its buffers for minutes. A few of those and memory is
-# tight; tight memory makes responses slow; slow responses make more
-# clients give up. That spiral does not recover on its own - measured, the
-# C heap sat at 508 bytes free / 208 largest and was still dead 400 seconds
-# after all traffic stopped, so the dashboard was gone until a reboot.
-#
-# Shedding load breaks the spiral. A 503 is a few dozen bytes and always
-# fits, the loop stays fast, the stuck buffers time out, and the device
-# recovers by itself. An honest "busy, retry" beats a device that needs
-# the EN button.
-#
-# Normal operation sits at 18-31KB largest, and collapse was at 208 bytes,
-# so this floor is far below healthy traffic and far above the spiral.
-# MEASURED, and set low on purpose. An earlier value of 8192 was a
-# mistake: under real browser use this device settles at ~7936 largest
-# block, so that floor refused nearly every request and showed "busy"
-# instead of the dashboard - the guard was doing more damage than the
-# condition it guarded against. The device serves fine at 8KB; genuine
-# collapse is at ~200-800 bytes, which is what this is for.
-_MIN_SERVE_BLOCK = 2048
-
-_shed_count = 0
-# NOTE: recycling the listening socket was tried here and REMOVED. It
-# fires, main.py rebuilds the listener - and the C heap stays exactly
-# where it was (measured: 9668 free before and after). The lost memory is
-# not held by our sockets, so closing them reclaims nothing. Do not
-# re-add it without new evidence.
-
-
-_last_heap_check = None
-_last_heap_largest = 0
-
-
-def _largest_c_block():
-    """Largest contiguous ESP-IDF C-heap block, sampled at most once a
-    second.
-
-    Deliberately NOT read from state.idf_largest: main.py refreshes that
-    only every 5 seconds, and it stops refreshing entirely while the loop
-    is stalled - which is precisely when this guard has to fire. A stale
-    healthy number would keep the door open through the collapse. Falls
-    back to main.py's sample only if esp32.idf_heap_info is unavailable."""
-    global _last_heap_check, _last_heap_largest
-    now = time.ticks_ms()
-    if (_last_heap_check is not None
-            and time.ticks_diff(now, _last_heap_check) < 1000):
-        return _last_heap_largest
-    _last_heap_check = now
-    try:
-        import esp32
-        largest = 0
-        for region in esp32.idf_heap_info(esp32.HEAP_DATA):
-            if region[2] > largest:
-                largest = region[2]
-        _last_heap_largest = largest
+        cl.close()
+        await cl.wait_closed()
     except Exception:
-        _last_heap_largest = getattr(state, "idf_largest", 0) or 0
-    return _last_heap_largest
+        pass
 
 
-def _overloaded():
-    """True when the C heap is too fragmented to serve a real response."""
-    largest = _largest_c_block()
-    return 0 < largest < _MIN_SERVE_BLOCK
+async def _client(reader, cl):
+    """One connection, one coroutine.
 
+    THIS IS THE POINT OF THE PORT. The old server accepted and served
+    connections inline from the main loop, so a single client that stopped
+    reading blocked everything - including the valve safety cutoff, which
+    runs in that same loop. Under concurrent connections it blocked long
+    enough for the watchdog to reboot the board, reproducibly, and NOT for
+    want of memory: it did it on an ESP32-S3 with 8MB of C heap free.
 
-def poll_once(timeout=0.2):
-    """Service pending HTTP connections. Call frequently from the main loop.
-
-    Handles up to _MAX_CONNS_PER_POLL requests, bounded by a wall-clock
-    budget, instead of exactly one. Serving one per loop pass was a
-    self-sustaining collapse: the dashboard polls every 5s, a stalled
-    connection could occupy the loop for the whole socket timeout, and any
-    request that arrived meanwhile queued behind it. Once the device fell
-    behind it never caught up - the backlog grew, the page half-loaded, and
-    more tabs made it worse. Draining lets a burst clear in one pass, while
-    the budget keeps valve timing and the watchdog serviced."""
-    global _idle_ms
-    if _server_sock is None:
-        return
-    t0 = time.ticks_ms()
+    Here each connection is its own task. A stalled one parks itself on the
+    event loop and nothing else notices. The whole exchange is bounded by
+    wait_for as a backstop, so even a pathological client cannot hold a
+    task open indefinitely."""
+    served = 0
     try:
-        r, _, _ = select.select([_server_sock], [], [], timeout)
-    except OSError:
-        return
+        while served < _KEEPALIVE_MAX_REQUESTS:
+            # First request gets the normal budget; subsequent ones wait
+            # only as long as a live tab would plausibly stay quiet.
+            budget = _CONN_TIMEOUT_SEC if served == 0 else _KEEPALIVE_IDLE_SEC
+            keep = await asyncio.wait_for(_handle(reader, cl), budget)
+            served += 1
+            if not keep:
+                break
+    except asyncio.TimeoutError:
+        pass          # idle or too slow; reclaim the connection
+    except Exception as e:
+        print("web handler error:", e)
     finally:
-        _idle_ms += time.ticks_diff(time.ticks_ms(), t0)
-    if not r:
-        return
+        await _close(cl)
 
-    started = time.ticks_ms()
-    for _ in range(_MAX_CONNS_PER_POLL):
+
+_listen_sock = None
+_accept_task = None
+_accepted = 0
+_listener_restarts = 0
+
+
+def server_running():
+    """True only while a listener exists AND something is accepting on it.
+
+    Both halves are load-bearing, and each was learned by measurement:
+      * checking the server object alone reported healthy while every
+        connection was REFUSED (the socket had gone),
+      * checking the socket alone reported healthy while every connection
+        TIMED OUT (the socket was there; the accept coroutine had died).
+    A health check that cannot report ill is worse than none - it stops
+    anyone looking."""
+    if _listen_sock is None:
+        return False
+    if _accept_task is None:
+        return False
+    return not _task_done(_accept_task)
+
+
+def server_stats():
+    """(connections accepted, times the listener had to be rebuilt)."""
+    return _accepted, _listener_restarts
+
+
+def _new_listener(port):
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # numeric bind - getaddrinfo allocates lwIP structures and has failed
+    # with EAI_MEMORY (-203) on this hardware
+    s.bind(("0.0.0.0", port))
+    s.listen(4)
+    s.setblocking(False)
+    return s
+
+
+async def _accept_loop(port):
+    """Accept forever, rebuilding the listener whenever it dies.
+
+    This coroutine must never exit. Every error is contained: a failure to
+    accept one connection is ignored, and a failure of the listening socket
+    itself rebuilds it."""
+    global _listen_sock, _accepted, _listener_restarts
+    while True:
         try:
-            cl, addr = _server_sock.accept()
-        except OSError:
-            return          # nothing else waiting
-        try:
-            # Shed rather than spiral: serving a full response with almost
-            # no contiguous C heap is what turns a slow patch into a
-            # permanent wedge.
-            if _overloaded():
-                _send_busy(cl)
-            else:
-                _handle(cl)
+            await _accept_once(port)
         except Exception as e:
-            print("web handler error:", e)
-        finally:
-            try:
-                cl.close()
-            except OSError:
-                pass
-        # Never hold the loop longer than the budget: valve cutoffs and the
-        # watchdog run out there.
-        if time.ticks_diff(time.ticks_ms(), started) > _POLL_BUDGET_MS:
-            return
+            # This coroutine must outlive anything that happens on any one
+            # connection. Dying here is what left the socket open with
+            # nobody accepting on it.
+            print("web accept loop error:", e)
+            await asyncio.sleep_ms(500)
+
+
+async def _accept_once(port):
+    """One pass of the accept loop. Errors propagate to _accept_loop."""
+    global _listen_sock, _accepted, _listener_restarts
+    if _listen_sock is None:
         try:
-            more, _, _ = select.select([_server_sock], [], [], 0)
-        except OSError:
+            _listen_sock = _new_listener(port)
+            print("Web server listening on port {}".format(port))
+        except OSError as e:
+            print("web listener bind failed:", e)
+            await asyncio.sleep(5)
             return
-        if not more:
+    try:
+        cl, _addr = _listen_sock.accept()
+    except OSError as e:
+        err = e.args[0] if e.args else None
+        if err in (11, 35):        # EAGAIN - simply nothing waiting
+            await asyncio.sleep_ms(_ACCEPT_POLL_MS)
             return
-
-
-
-def _handle(cl):
-    cl.settimeout(_CONN_TIMEOUT_SEC)
-    header_part, leftover = _read_headers(cl)
-    if not header_part:
+        # The listening socket itself is broken. THIS is the case that
+        # used to go unnoticed and take the dashboard down until a
+        # reboot.
+        print("web listener died ({}), rebuilding".format(e))
+        _listener_restarts += 1
+        try:
+            state.log_event("web", "listener rebuilt after {}".format(e))
+        except Exception:
+            pass
+        try:
+            _listen_sock.close()
+        except Exception:
+            pass
+        _listen_sock = None
+        await asyncio.sleep_ms(200)
         return
+    _accepted += 1
+    try:
+        cl.setblocking(False)
+        stream = asyncio.StreamWriter(cl)
+    except Exception as e:
+        print("web: could not wrap connection:", e)
+        try:
+            cl.close()
+        except Exception:
+            pass
+        return
+    # One task per connection; it owns the socket from here.
+    asyncio.create_task(_client(stream, stream))
+
+
+async def start_server(port=80):
+    """Start (or restart) the accept loop. Safe to call repeatedly."""
+    global _accept_task
+    if _accept_task is not None and not _task_done(_accept_task):
+        return server_running()
+    gc.collect()
+    _accept_task = asyncio.create_task(_accept_loop(port))
+    # let it bind before reporting
+    await asyncio.sleep_ms(100)
+    return server_running()
+
+
+def _task_done(t):
+    """MicroPython tasks expose `done()`; fall back to treating an unknown
+    task as still running rather than spawning a second accept loop."""
+    try:
+        return t.done()
+    except AttributeError:
+        return False
+
+
+
+async def _handle(reader, cl):
+    """Serve one request. Returns True if the connection may be reused.
+
+    Anything that ends the conversation - a malformed request, a client
+    asking to close, an upload, or a reboot - returns False so _client
+    tears the socket down."""
+    header_part, leftover = await _read_headers(reader)
+    if not header_part:
+        return False
     # Cheap enough to do on every request, and it decides whether the 101KB
     # dashboard goes out compressed - which is what keeps the lwIP buffers
     # inside the C heap (see _send_file).
     gzip_ok = b"gzip" in header_part.lower()
+    # Honour a client that asks to close. Cheap, and it stops us holding a
+    # netconn open for 15s waiting on a peer that already said goodbye -
+    # the whole point of keep-alive is to spend fewer of those, not more.
+    _hdr_lower = header_part.lower()
+    client_closes = (b"connection: close" in _hdr_lower
+                     or b"http/1.0" in _hdr_lower.split(CRLF.encode())[0])
     try:
         lines = header_part.split(b"\r\n")
         method, path, _ = lines[0].decode().split(" ")
     except Exception:
-        _send(cl, 400, "text/plain", "bad request")
-        return
+        await _send(cl, 400, "text/plain", "bad request")
+        return False
 
     if getattr(config, "WEB_DEBUG", False):
         # one line per request on the serial console - the definitive
@@ -306,35 +305,35 @@ def _handle(cl):
         content_type_line = _get_header(header_part, "content-type")
         boundary = _extract_boundary(content_type_line)
         if not boundary:
-            _send(cl, 400, "text/plain", "missing multipart boundary")
-            return
+            await _send(cl, 400, "text/plain", "missing multipart boundary")
+            return False
         content_length = _content_length(header_part)
         if content_length > _MAX_UPLOAD_BYTES:
-            _send(cl, 413, "application/json", json.dumps(
+            await _send(cl, 413, "application/json", json.dumps(
                 {"ok": False, "error": "upload too large ({} bytes, max {})".format(
                     content_length, _MAX_UPLOAD_BYTES)}))
-            return
+            return False
         try:
-            saved, rejected = _stream_multipart_to_disk(
-                cl, boundary, content_length, leftover)
+            saved, rejected = await _stream_multipart_to_disk(
+                reader, boundary, content_length, leftover)
         except Exception as e:
             # A stalled or overlong transfer aborts here rather than
             # spinning. Whatever landed is reported so the user knows
             # the device is in a half-updated state and can retry.
             state.log_event("code_upload", "FAILED: {}".format(e))
-            _send(cl, 500, "application/json",
+            await _send(cl, 500, "application/json",
                   json.dumps({"ok": False, "error": str(e)}))
-            return
+            return False
         state.log_event("code_upload", "saved={} rejected={}".format(saved, rejected))
-        _send(cl, 200, "application/json", json.dumps({"ok": True, "saved": saved, "rejected": rejected}))
-        return
+        await _send(cl, 200, "application/json", json.dumps({"ok": True, "saved": saved, "rejected": rejected}))
+        return False
 
-    body = _read_body(cl, header_part, leftover)
+    body = await _read_body(reader, header_part, leftover)
 
     if path == "/" and method == "GET":
-        _send_file(cl, INDEX_HTML_PATH, "text/html", gzip_ok)
+        await _send_file(cl, INDEX_HTML_PATH, "text/html", gzip_ok)
     elif path == "/api/status" and method == "GET":
-        _send_json(cl, _status_payload())
+        await _send_json(cl, _status_payload())
     elif path == "/api/history" and method == "GET":
         # ?hours=N serves the flash-backed long history (survives reboots);
         # no parameter keeps the live 3-hour RAM buffer, which is finer
@@ -344,13 +343,13 @@ def _handle(cl):
         except ValueError:
             _hours = 0
         if _hours > 0:
-            _send_long_history(cl, min(_hours, 24 * 14))
+            await _send_long_history(cl, min(_hours, 24 * 14))
         else:
-            _send_history(cl)
+            await _send_history(cl)
     elif path == "/api/events" and method == "GET":
         # 60 events x ~100 bytes = ~6KB, the same size that broke the pin
         # map. Streamed for the same reason.
-        _send_json(cl, state.get_events())
+        await _send_json(cl, state.get_events())
     elif path == "/api/valve" and method == "POST":
         action = params.get("state", "")
         valve_name = params.get("valve", _default_valve_name)
@@ -360,14 +359,14 @@ def _handle(cl):
                 valve.open(reason="manual_web")
             elif action == "close":
                 valve.close(reason="manual_web")
-        _send(cl, 200, "application/json", json.dumps({"ok": bool(valve)}))
+        await _send(cl, 200, "application/json", json.dumps({"ok": bool(valve)}))
     elif path == "/api/water/trigger" and method == "POST":
         settings = settings_store.get()
         duration = _int_param(params, "duration",
                               settings["supplemental_duration_sec"], lo=1)
         valve_name = params.get("valve", _default_valve_name)
         ok = _trigger_watering_cb(valve_name, duration, "manual_web") if valve_name else False
-        _send(cl, 200, "application/json", json.dumps({"ok": bool(ok)}))
+        await _send(cl, 200, "application/json", json.dumps({"ok": bool(ok)}))
     elif path == "/api/water/all" and method == "POST":
         # Master quick-water: every valve runs, one at a time, in order.
         settings = settings_store.get()
@@ -375,7 +374,7 @@ def _handle(cl):
                               settings["supplemental_duration_sec"], lo=1)
         names = [v["name"] for v in settings["hardware"].get("valves", [])]
         ok = _trigger_valves_cb(names, duration, "manual_web_all") if names else False
-        _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": names}))
+        await _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": names}))
     elif path == "/api/zone/trigger" and method == "POST":
         # Water a whole zone: opens its valves one at a time, in order,
         # each for the zone's own run time (fallback: supplemental default).
@@ -387,20 +386,20 @@ def _handle(cl):
             duration = settings.get("zone_durations", {}).get(zone_name) or settings["supplemental_duration_sec"]
         valve_names = settings["hardware"].get("zone_valves", {}).get(zone_name, [])
         ok = _trigger_valves_cb(valve_names, duration, "manual_web_zone") if valve_names else False
-        _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": valve_names}))
+        await _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": valve_names}))
     elif path == "/api/settings" and method == "GET":
-        _send_json(cl, settings_store.get())
+        await _send_json(cl, settings_store.get())
     elif path == "/api/settings" and method == "POST":
         _apply_settings_patch(params, body)
-        _send_json(cl, settings_store.get())
+        await _send_json(cl, settings_store.get())
     elif path == "/api/schedules" and method == "GET":
-        _send_json(cl, settings_store.get().get("schedules", []))
+        await _send_json(cl, settings_store.get().get("schedules", []))
     elif path == "/api/schedules" and method == "POST":
         # Body is the full replacement list of schedules as JSON.
         _apply_schedules(body)
-        _send_json(cl, settings_store.get().get("schedules", []))
+        await _send_json(cl, settings_store.get().get("schedules", []))
     elif path == "/api/pinmap" and method == "GET":
-        _send_pinmap(cl)
+        await _send_pinmap(cl)
     elif path == "/api/i2c/scan" and method == "GET":
         # Live I2C bus scan - returns the address of every device that
         # answers. ADS1115 boards show up as 0x48-0x4B depending on how
@@ -411,33 +410,33 @@ def _handle(cl):
         if _i2c is not None and not state.scan_busy:
             state.scan_requested = True
         prev = state.scan_result or {}
-        _send(cl, 200, "application/json", json.dumps({
+        await _send(cl, 200, "application/json", json.dumps({
             "found": prev.get("found", []),
             "at": prev.get("at"),
             "busy": state.scan_busy or state.scan_requested,
         }))
     elif path == "/api/valves" and method == "GET":
-        _send_json(cl, settings_store.get()["hardware"].get("valves", []))
+        await _send_json(cl, settings_store.get()["hardware"].get("valves", []))
     elif path == "/api/valves" and method == "POST":
         _apply_valves_patch(body)
-        _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
-        cl.close()
+        await _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
+        await _close(cl)
         state.log_event("reboot", "applying valve config change")
         time.sleep(1)
         machine.reset()
     elif path == "/api/zones" and method == "GET":
-        _send_json(cl, _zones_payload())
+        await _send_json(cl, _zones_payload())
     elif path == "/api/zones" and method == "POST":
         # Body is the full replacement zone list. Zones are live config
         # (read fresh every moisture check) - no reboot needed.
         _apply_zones_patch(body)
-        _send_json(cl, _zones_payload())
+        await _send_json(cl, _zones_payload())
     elif path == "/api/hardware" and method == "GET":
-        _send_json(cl, settings_store.get()["hardware"])
+        await _send_json(cl, settings_store.get()["hardware"])
     elif path == "/api/hardware" and method == "POST":
         _apply_hardware_patch(params, body)
-        _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
-        cl.close()
+        await _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
+        await _close(cl)
         state.log_event("reboot", "applying hardware config change")
         time.sleep(1)
         machine.reset()
@@ -445,20 +444,20 @@ def _handle(cl):
         # Full device configuration (everything except WiFi creds, which
         # live in config.py) as a downloadable file - for backups and for
         # cloning a working setup onto a new kit.
-        _send_json(cl, {"planter_config": 1, "settings": settings_store.get()},
+        await _send_json(cl, {"planter_config": 1, "settings": settings_store.get()},
                    filename="planter-config.json")
     elif path == "/api/config/import" and method == "POST":
         if _apply_config_import(body):
-            _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
-            cl.close()
+            await _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
+            await _close(cl)
             state.log_event("reboot", "config imported")
             time.sleep(1)
             machine.reset()
         else:
-            _send(cl, 400, "application/json", json.dumps({"ok": False, "error": "not a planter config file"}))
+            await _send(cl, 400, "application/json", json.dumps({"ok": False, "error": "not a planter config file"}))
     elif path == "/api/wifi" and method == "GET":
         # saved SSID only - never send the password to the browser
-        _send(cl, 200, "application/json", json.dumps({
+        await _send(cl, 200, "application/json", json.dumps({
             "ssid": wifi.load_creds(config)["ssid"],
             "connected": wifi.is_connected(),
         }))
@@ -471,7 +470,7 @@ def _handle(cl):
         except Exception:
             pass
         if not ssid:
-            _send(cl, 400, "application/json", json.dumps({"ok": False, "error": "ssid required"}))
+            await _send(cl, 400, "application/json", json.dumps({"ok": False, "error": "ssid required"}))
         else:
             # Save and verify BEFORE promising a reboot: if the write
             # failed we'd come back on the old network having said "ok".
@@ -479,12 +478,12 @@ def _handle(cl):
                 wifi.save_creds(ssid, password)
             except Exception as e:
                 state.log_event("wifi", "credential save FAILED: {}".format(e))
-                _send(cl, 500, "application/json",
+                await _send(cl, 500, "application/json",
                       json.dumps({"ok": False,
                                   "error": "could not save credentials: {}".format(e)}))
                 return
-            _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
-            cl.close()
+            await _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
+            await _close(cl)
             state.log_event("reboot", "wifi credentials changed to " + ssid)
             time.sleep(1)
             machine.reset()
@@ -501,22 +500,22 @@ def _handle(cl):
             zone, point = "", ""
         hw = settings_store.get()["hardware"]
         if point not in ("dry", "wet"):
-            _send(cl, 400, "application/json",
+            await _send(cl, 400, "application/json",
                   json.dumps({"ok": False, "error": "point must be 'dry' or 'wet'"}))
         elif zone not in hw.get("zone_channels", {}):
-            _send(cl, 400, "application/json",
+            await _send(cl, 400, "application/json",
                   json.dumps({"ok": False, "error": "unknown zone: " + zone}))
         elif state.calibration_busy or state.calibration_requested:
-            _send(cl, 200, "application/json",
+            await _send(cl, 200, "application/json",
                   json.dumps({"ok": True, "queued": False,
                               "error": "a calibration is already running"}))
         else:
             state.calibration_result = None
             state.calibration_requested = {"zone": zone, "point": point, "seconds": 10}
-            _send(cl, 200, "application/json",
+            await _send(cl, 200, "application/json",
                   json.dumps({"ok": True, "queued": True, "seconds": 10}))
     elif path == "/api/calibrate" and method == "GET":
-        _send_json(cl, {
+        await _send_json(cl, {
             "busy": state.calibration_busy or bool(state.calibration_requested),
             "result": state.calibration_result,
             "calibration": settings_store.get()["hardware"].get("zone_calibration", {}),
@@ -533,12 +532,12 @@ def _handle(cl):
         # loop run it between iterations. The dashboard polls /api/status
         # for the outcome.
         if _update_cb is None:
-            _send(cl, 503, "application/json",
+            await _send(cl, 503, "application/json",
                   json.dumps({"ok": False, "error": "updater not available"}))
         else:
             want_install = path.endswith("/apply")
             if state.update_in_progress:
-                _send(cl, 200, "application/json",
+                await _send(cl, 200, "application/json",
                       json.dumps({"ok": True, "queued": False,
                                   "error": "an update check is already running"}))
             else:
@@ -546,27 +545,35 @@ def _handle(cl):
                 state.update_error = None
                 state.log_event("update",
                                 "dashboard requested " + state.update_requested)
-                _send(cl, 200, "application/json",
+                await _send(cl, 200, "application/json",
                       json.dumps({"ok": True, "queued": True}))
     elif path == "/api/reboot" and method == "POST":
-        _send(cl, 200, "application/json", json.dumps({"ok": True}))
-        cl.close()
+        await _send(cl, 200, "application/json", json.dumps({"ok": True}))
+        await _close(cl)
         state.log_event("reboot", "manual reboot requested")
         time.sleep(1)
         machine.reset()
     elif path.startswith("/api/"):
-        _send(cl, 404, "text/plain", "not found")
+        await _send(cl, 404, "text/plain", "not found")
     else:
         # Unknown non-API path: send the browser to the dashboard. This is
         # also what makes a phone's captive-portal probe pop the dashboard
         # open when it joins the rescue hotspot.
-        _send_all(cl, b"HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await _send_all(cl, "HTTP/1.1 302 Found" + CRLF + "Location: /" + CRLF +
+                        "Content-Length: 0" + CRLF + _CONN_HEADER + CRLF + CRLF)
+
+
+    # Served cleanly: the client may send another request on this same
+    # connection, unless it asked otherwise. Returning None here would
+    # silently close every socket after one request and undo the whole
+    # point of keep-alive.
+    return not client_closes
 
 
 _MAX_HEADER_BYTES = 4096  # headers are small; bail out rather than loop forever on garbage
 
 
-def _read_headers(cl):
+async def _read_headers(cl):
     """Read only up through the blank line ending the headers. Returns
     (header_part, leftover) - leftover is any bytes already read past the
     header boundary (start of the body), which callers must pass along
@@ -575,7 +582,7 @@ def _read_headers(cl):
     data = b""
     while b"\r\n\r\n" not in data:
         _feed()
-        chunk = cl.recv(512)
+        chunk = await cl.read(512)
         if not chunk:
             break
         data += chunk
@@ -630,7 +637,7 @@ def _content_length(header_part):
 _MAX_BODY_BYTES = 16 * 1024
 
 
-def _read_body(cl, header_part, leftover):
+async def _read_body(cl, header_part, leftover):
     """Buffer the full body in RAM - fine for the small JSON payloads every
     route except /api/upload sends. Uploads use _stream_multipart_to_disk
     instead, which never holds more than one chunk in memory.
@@ -645,7 +652,7 @@ def _read_body(cl, header_part, leftover):
     body = leftover
     while len(body) < content_length:
         _feed()
-        chunk = cl.recv(2048)
+        chunk = await cl.read(2048)
         if not chunk:
             break
         body += chunk
@@ -706,7 +713,7 @@ def _upload_feed(deadline):
     _feed()
 
 
-def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
+async def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
     _deadline = time.time() + _UPLOAD_DEADLINE_SEC
     """Read a multipart/form-data body straight off the socket and write
     each file's content directly to flash as it arrives, one small chunk
@@ -757,7 +764,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
                 if bytes_read >= content_length:
                     break
                 _upload_feed(_deadline)
-                chunk = cl.recv(_UPLOAD_CHUNK)
+                chunk = await cl.read(_UPLOAD_CHUNK)
                 if not chunk:
                     break
                 buf += chunk
@@ -772,7 +779,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
                 if bytes_read >= content_length:
                     break
                 _upload_feed(_deadline)
-                chunk = cl.recv(_UPLOAD_CHUNK)
+                chunk = await cl.read(_UPLOAD_CHUNK)
                 if not chunk:
                     break
                 buf += chunk
@@ -824,7 +831,7 @@ def _stream_multipart_to_disk(cl, boundary, content_length, leftover):
                 close_current()
                 return saved, rejected
             _upload_feed(_deadline)
-            chunk = cl.recv(_UPLOAD_CHUNK)
+            chunk = await cl.read(_UPLOAD_CHUNK)
             if not chunk:
                 close_current()
                 return saved, rejected
@@ -1384,6 +1391,12 @@ def _status_payload():
         # above; when THIS runs out the network dies while Python keeps going
         "idf_free": state.idf_free,
         "idf_largest": state.idf_largest,
+        # Connections accepted, and how many times the listener had to be
+        # rebuilt. A climbing restart count is the signature of the fault
+        # that used to take the dashboard down silently until a reboot -
+        # worth seeing rather than inferring.
+        "conns_accepted": _accepted,
+        "listener_restarts": _listener_restarts,
         # OTA updater status (see updater.py) - drives the dashboard's
         # Firmware Updates card
         "update": {
@@ -1453,7 +1466,7 @@ def _url_decode(s):
     return out
 
 
-def _send_long_history(cl, hours):
+async def _send_long_history(cl, hours):
     """Stream the flash-backed history as JSON in the same shape the live
     chart uses. Read line by line and written out in chunks - the file can
     be ~15KB for a week and must never sit in RAM alongside a JSON copy of
@@ -1503,21 +1516,21 @@ def _send_long_history(cl, hours):
     hdr = "HTTP/1.1 200 OK" + CRLF
     hdr += "Content-Type: application/json" + CRLF
     hdr += "Content-Length: {}".format(total) + CRLF
-    hdr += "Connection: close" + CRLF + CRLF
-    _send_all(cl, hdr.encode())
-    _send_all(cl, b"[")
+    hdr += _CONN_HEADER + CRLF + CRLF
+    await _send_all(cl, hdr.encode())
+    await _send_all(cl, b"[")
     i = 0
     for pt in _points():
         if i:
-            _send_all(cl, b",")
-        _send_all(cl, json.dumps(pt).encode())
+            await _send_all(cl, b",")
+        await _send_all(cl, json.dumps(pt).encode())
         i += 1
         if i % 20 == 0:
             _feed()
-    _send_all(cl, b"]")
+    await _send_all(cl, b"]")
 
 
-def _send(cl, status, content_type, body):
+async def _send(cl, status, content_type, body):
     """One-shot response for small fixed payloads (errors, {"ok": true}).
     Anything that grows with the user's config goes through _send_json,
     which streams instead."""
@@ -1526,9 +1539,9 @@ def _send(cl, status, content_type, body):
     header = "HTTP/1.1 {} OK".format(status) + CRLF
     header += "Content-Type: {}".format(content_type) + CRLF
     header += "Content-Length: {}".format(len(body)) + CRLF
-    header += "Connection: close" + CRLF + CRLF
-    _send_all(cl, header.encode())
-    _send_all(cl, body)
+    header += _CONN_HEADER + CRLF + CRLF
+    await _send_all(cl, header.encode())
+    await _send_all(cl, body)
 
 
 _MAX_STREAM_DEPTH = 6
@@ -1578,7 +1591,7 @@ def _json_fragments(obj, depth=0):
 _JSON_FLUSH_BYTES = 512
 
 
-def _send_fragments(cl, frags):
+async def _send_fragments(cl, frags):
     """Write small JSON fragments to the socket in coalesced blocks.
 
     Two constraints pull against each other here.
@@ -1602,15 +1615,15 @@ def _send_fragments(cl, frags):
         buf.append(b)
         n += len(b)
         if n >= _JSON_FLUSH_BYTES:
-            _send_all(cl, b"".join(buf))
+            await _send_all(cl, b"".join(buf))
             buf = []
             n = 0
             _feed()
     if buf:
-        _send_all(cl, b"".join(buf))
+        await _send_all(cl, b"".join(buf))
 
 
-def _send_json(cl, obj, filename=None):
+async def _send_json(cl, obj, filename=None):
     """Stream a JSON response without ever building it as one string.
 
     THIS IS THE TWO-HEAP TRAP. A single json.dumps() of a whole payload is
@@ -1643,16 +1656,16 @@ def _send_json(cl, obj, filename=None):
     if filename:
         header += 'Content-Disposition: attachment; filename="{}"'.format(filename) + CRLF
     header += "Content-Length: {}".format(total) + CRLF
-    header += "Connection: close" + CRLF + CRLF
-    _send_all(cl, header.encode())
-    _send_fragments(cl, _json_fragments(obj))
+    header += _CONN_HEADER + CRLF + CRLF
+    await _send_all(cl, header.encode())
+    await _send_fragments(cl, _json_fragments(obj))
 
 
-def _send_history(cl):
-    _send_json(cl, state.get_moisture_history())
+async def _send_history(cl):
+    await _send_json(cl, state.get_moisture_history())
 
 
-def _send_pinmap(cl):
+async def _send_pinmap(cl):
     """Stream the GPIO pin map instead of building it as one JSON string.
 
     THIS IS THE TWO-HEAP TRAP, and it is why the GPIO card was the one that
@@ -1725,9 +1738,9 @@ def _send_pinmap(cl):
     hdr = "HTTP/1.1 200 OK" + CRLF
     hdr += "Content-Type: application/json" + CRLF
     hdr += "Content-Length: {}".format(total) + CRLF
-    hdr += "Connection: close" + CRLF + CRLF
-    _send_all(cl, hdr.encode())
-    _send_fragments(cl, pieces())
+    hdr += _CONN_HEADER + CRLF + CRLF
+    await _send_all(cl, hdr.encode())
+    await _send_fragments(cl, pieces())
 
 
 # A response must never hold the loop longer than this, no matter what the
@@ -1739,90 +1752,32 @@ _SEND_DEADLINE_MS = 4000
 _EAGAIN = (11, 35)
 
 
-def _send_all(cl, data):
-    """Write every byte, or give up on a deadline.
+async def _send_all(cl, data):
+    """Write a whole buffer, yielding to the event loop for back-pressure.
 
-    settimeout() DOES NOT BOUND send() on this port. Measured: a single
-    1024-byte send blocked for 30 seconds on a socket with a 3-second
-    timeout. Because the server is single-threaded and polled from the main
-    loop, that one stuck client froze the whole dashboard - and the valve
-    safety cutoff runs in that same loop. One client going away mid-response
-    was enough to make the device look dead to everyone else.
+    Under the old blocking server this function fought the socket layer:
+    `settimeout()` does not bound `send()` on this port (measured - a
+    1024-byte send blocked for 30 SECONDS on a 3-second timeout), so it
+    had to go non-blocking and enforce its own deadline and spin cap.
 
-    So the socket is switched to non-blocking and the waiting is done here,
-    against an explicit deadline: EAGAIN means "lwIP has no buffer yet",
-    which is normal back-pressure and worth a short wait; passing the
-    deadline means the peer is gone or wedged and the connection is
-    abandoned so the loop can get on with its work. The watchdog is fed
-    while waiting, and abandoning raises, which makes poll_once close the
-    socket in its finally.
-
-    Partial writes are the norm here - send() returns what it accepted, and
-    ignoring that return was itself an old bug in this file (it silently
-    truncated responses)."""
+    asyncio removes the fight. `write()` buffers and `drain()` waits on
+    the event loop until the socket is actually writable, so a slow or
+    vanished client parks THIS coroutine and nothing else - the main loop
+    and every other connection keep running. That is the whole reason for
+    the port: the old design stalled the loop that also enforces the valve
+    cutoff."""
     if isinstance(data, str):
         data = data.encode()
-    try:
-        cl.setblocking(False)
-    except (OSError, AttributeError):
-        pass
-    total = len(data)
-    sent = 0
-    _dbg = getattr(config, "WEB_SEND_DEBUG", False)
-    start = time.ticks_ms()
-    # Belt and braces alongside the deadline: a deadline is only as good as
-    # the clock behind it, and this loop must NEVER become unbounded - it
-    # runs inside the main loop that also enforces the valve cutoff. Each
-    # spin costs ~2ms, so this caps a stalled send at a few seconds even if
-    # ticks_ms misbehaves.
-    spins = 0
-    while sent < total:
-        spins += 1
-        if spins > 4000:
-            raise OSError("send made no progress: {} of {} bytes".format(sent, total))
-        chunk = data[sent:sent + _SEND_CHUNK]
-        if _dbg:
-            print("  send: attempting", len(chunk), "of", total - sent, "left")
-        try:
-            n = cl.send(chunk)
-        except OSError as e:
-            err = e.args[0] if e.args else None
-            if err in _EAGAIN:
-                if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
-                    raise OSError("send deadline exceeded after {} of {} bytes".format(
-                        sent, total))
-                _feed()
-                time.sleep_ms(2)
-                continue
-            raise
-        if _dbg:
-            print("  send: returned", n)
-        if n is None:
-            # non-blocking socket with nothing accepted this time
-            if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
-                raise OSError("send deadline exceeded after {} of {} bytes".format(
-                    sent, total))
-            _feed()
-            time.sleep_ms(2)
-            continue
-        if n < 0:
-            raise OSError("socket send returned {}".format(n))
-        if n == 0:
-            if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
-                raise OSError("send stalled at {} of {} bytes".format(sent, total))
-            _feed()
-            time.sleep_ms(2)
-            continue
-        sent += n
-        if sent < total:
-            _feed()
-    return sent
+    cl.write(data)
+    await cl.drain()
+    _feed()
+    return len(data)
 
 
 _SEND_FILE_CHUNK = 512   # same ceiling as _SEND_CHUNK - see the note there
 
 
-def _send_file(cl, path, content_type, gzip_ok=False):
+async def _send_file(cl, path, content_type, gzip_ok=False):
     """Stream a file straight from flash in small chunks instead of loading
     it into one big string first - see the note at the top of this file for
     why (a single large contiguous allocation reliably fails on a
@@ -1855,7 +1810,7 @@ def _send_file(cl, path, content_type, gzip_ok=False):
         try:
             size = os.stat(path)[6]
         except OSError:
-            _send(cl, 404, "text/plain", "not found")
+            await _send(cl, 404, "text/plain", "not found")
             return
 
     header = "HTTP/1.1 200 OK" + CRLF
@@ -1863,13 +1818,13 @@ def _send_file(cl, path, content_type, gzip_ok=False):
     if content_encoding:
         header += "Content-Encoding: gzip" + CRLF
     header += "Content-Length: {}".format(size) + CRLF
-    header += "Connection: close" + CRLF + CRLF
-    _send_all(cl, header.encode())
+    header += _CONN_HEADER + CRLF + CRLF
+    await _send_all(cl, header.encode())
     with open(path, "rb") as f:
         while True:
             _feed()
             chunk = f.read(_SEND_FILE_CHUNK)
             if not chunk:
                 break
-            _send_all(cl, chunk)
+            await _send_all(cl, chunk)
 

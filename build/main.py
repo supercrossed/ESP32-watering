@@ -2,6 +2,7 @@
 import time
 import gc
 import machine
+import asyncio
 from machine import I2C, Pin
 
 import config
@@ -980,429 +981,475 @@ def run_update_check(install=False):
 
 state.log_event("ready", "entering main loop")
 
-while True:
-    now = time.time()
+# How long the loop parks between passes. This used to come for free from
+# web.poll_once() blocking in select(); with the server on its own tasks
+# the loop must yield explicitly, or it spins and starves them. ~5Hz is
+# the cadence the valve safety cutoff was designed around.
+_LOOP_SLEEP_MS = 200
 
-    if wdt:
-        wdt.feed()
+# Time spent parked, for the dashboard's CPU-load figure. web.take_idle_ms()
+# used to supply this from its select() timeout; that call no longer exists,
+# so the loop accounts for its own idle time.
+_idle_ms = 0
 
-    # Safety cutoff: checked every iteration, for every valve, and wrapped
-    # individually. An exception escaping here would propagate out of the
-    # while loop and END main.py - leaving whatever valve is open STILL
-    # OPEN until the watchdog reboots. Per-valve isolation also means one
-    # valve's failure can't stop the others being checked.
-    for v in valves.values():
-        try:
-            v.check_safety_cutoff()
-        except Exception as e:
-            print("safety cutoff error on", getattr(v, "name", "?"), "-", e)
+
+async def _main_loop():
+    # Computed from the AST, not by hand. Note `rescue_mod`: it is bound
+    # by `import wifi_setup as rescue_mod` inside the loop, and an
+    # import-as binds a LOCAL just like an assignment does - missing it
+    # made the whole wifi-health block raise
+    # "local variable referenced before assignment" on the first pass.
+    global _idle_ms, a, found, lan_fail_streak, last_health_check, last_idf_print, last_load_calc, last_moisture_check, last_ntp_ok, last_ntp_recycle, last_ntp_retry, last_schedule_check, last_update_check_day, last_wifi_check, lt, moisture_fail_streak, moisture_interval, now, ok, rescue_mod, v, wifi_down_since, wifi_was_up
+    while True:
+        now = time.time()
+
+        if wdt:
+            wdt.feed()
+
+        # Safety cutoff: checked every iteration, for every valve, and wrapped
+        # individually. An exception escaping here would propagate out of the
+        # while loop and END main.py - leaving whatever valve is open STILL
+        # OPEN until the watchdog reboots. Per-valve isolation also means one
+        # valve's failure can't stop the others being checked.
+        for v in valves.values():
             try:
-                v.close(reason="safety_cutoff_error")  # fail closed
-            except Exception:
-                pass
+                v.check_safety_cutoff()
+            except Exception as e:
+                print("safety cutoff error on", getattr(v, "name", "?"), "-", e)
+                try:
+                    v.close(reason="safety_cutoff_error")  # fail closed
+                except Exception:
+                    pass
 
-    # close valve if a timed watering has hit its target
-    try:
-        check_active_watering()
-    except Exception as e:
-        print("active watering check error:", e)
-
-    # soak-and-recheck: re-water a zone that's still below its wet target
-    try:
-        check_soak_session()
-    except Exception as e:
-        print("soak check error:", e)
-
-    if now - last_moisture_check >= moisture_interval:
+        # close valve if a timed watering has hit its target
         try:
-            check_moisture_and_water()
-            if moisture_fail_streak >= 3:
-                state.log_event("sensors", "moisture reads recovered - normal interval")
-            moisture_fail_streak = 0
-            moisture_interval = config.MOISTURE_CHECK_INTERVAL_SEC
+            check_active_watering()
         except Exception as e:
-            print("moisture check error:", e)
-            moisture_fail_streak += 1
-            if moisture_fail_streak == 3:
-                moisture_interval = 300
-                state.log_event(
-                    "sensors",
-                    "3 straight moisture read failures - backing off to 5 min (ADS1115 wired?)")
-                # Try to recover the bus itself before settling into the
-                # slow interval. A stuck slave holding SDA low survives a
-                # driver-level retry but usually clears when the peripheral
-                # is torn down and rebuilt - and that is far cheaper than
-                # waiting for the watchdog to reboot the whole controller.
-                if reinit_i2c():
-                    moisture_fail_streak = 0
-                    moisture_interval = config.MOISTURE_CHECK_INTERVAL_SEC
-        try:
-            read_env_sensors()
-        except Exception as e:
-            print("env sensor error:", e)
-        last_moisture_check = now
+            print("active watering check error:", e)
 
-    if now - last_schedule_check >= 20:
+        # soak-and-recheck: re-water a zone that's still below its wet target
         try:
-            check_daily_schedule()
+            check_soak_session()
         except Exception as e:
-            print("schedule check error:", e)
-        last_schedule_check = now
+            print("soak check error:", e)
 
-    # WiFi self-heal: if the router rebooted, rejoin automatically. If it
-    # stays down, open the rescue hotspot alongside normal operation so
-    # the dashboard stays reachable from another device. Nothing in here
-    # is allowed to kill the loop - watering must survive any network mess.
-    if now - last_wifi_check >= 30:
-        last_wifi_check = now
-        # if the web server failed to start (or died), try to bring it back
-        try:
-            if web._server_sock is None and web.start_server():
-                state.log_event("web", "server started")
-        except Exception as e:
-            print("web server retry failed:", e)
-        try:
-            # While the rescue hotspot is up the station is deliberately
-            # parked (shared radio - see wifi_setup.start_rescue_ap), and
-            # poll_rescue() owns the retry cadence. Just observe here.
-            if rescue_mod and rescue_mod.rescue_active():
-                up = wifi.is_connected()
-            else:
-                up = wifi.ensure_connected(_wifi_creds["ssid"], _wifi_creds["password"])
-            if up != wifi_was_up:
-                # log the IP on reconnect - DHCP may hand out a NEW address,
-                # and without this there's no way to know where the UI went
-                state.log_event(
-                    "wifi",
-                    "reconnected, IP: " + wifi.current_ip() if up
-                    else "connection lost - retrying")
-                wifi_was_up = up
-            if up:
-                wifi_down_since = None
+        if now - last_moisture_check >= moisture_interval:
+            try:
+                check_moisture_and_water()
+                if moisture_fail_streak >= 3:
+                    state.log_event("sensors", "moisture reads recovered - normal interval")
+                moisture_fail_streak = 0
+                moisture_interval = config.MOISTURE_CHECK_INTERVAL_SEC
+            except Exception as e:
+                print("moisture check error:", e)
+                moisture_fail_streak += 1
+                if moisture_fail_streak == 3:
+                    moisture_interval = 300
+                    state.log_event(
+                        "sensors",
+                        "3 straight moisture read failures - backing off to 5 min (ADS1115 wired?)")
+                    # Try to recover the bus itself before settling into the
+                    # slow interval. A stuck slave holding SDA low survives a
+                    # driver-level retry but usually clears when the peripheral
+                    # is torn down and rebuilt - and that is far cheaper than
+                    # waiting for the watchdog to reboot the whole controller.
+                    if reinit_i2c():
+                        moisture_fail_streak = 0
+                        moisture_interval = config.MOISTURE_CHECK_INTERVAL_SEC
+            try:
+                read_env_sensors()
+            except Exception as e:
+                print("env sensor error:", e)
+            last_moisture_check = now
+
+        if now - last_schedule_check >= 20:
+            try:
+                check_daily_schedule()
+            except Exception as e:
+                print("schedule check error:", e)
+            last_schedule_check = now
+
+        # WiFi self-heal: if the router rebooted, rejoin automatically. If it
+        # stays down, open the rescue hotspot alongside normal operation so
+        # the dashboard stays reachable from another device. Nothing in here
+        # is allowed to kill the loop - watering must survive any network mess.
+        if now - last_wifi_check >= 30:
+            last_wifi_check = now
+            # if the web server failed to start (or died), try to bring it back
+            try:
+                if not web.server_running() and await web.start_server():
+                    state.log_event("web", "server started")
+            except Exception as e:
+                print("web server retry failed:", e)
+            try:
+                # While the rescue hotspot is up the station is deliberately
+                # parked (shared radio - see wifi_setup.start_rescue_ap), and
+                # poll_rescue() owns the retry cadence. Just observe here.
                 if rescue_mod and rescue_mod.rescue_active():
-                    rescue_mod.stop_rescue_ap()
-                    state.log_event("wifi", "rescue hotspot closed")
-            else:
-                if wifi_down_since is None:
-                    wifi_down_since = now
-                elif (getattr(config, "WIFI_RESCUE_AFTER_SEC", 0)
-                      and now - wifi_down_since >= config.WIFI_RESCUE_AFTER_SEC
-                      and not (rescue_mod and rescue_mod.rescue_active())):
-                    import wifi_setup as rescue_mod
-                    rescue_mod.start_rescue_ap()
+                    up = wifi.is_connected()
+                else:
+                    up = wifi.ensure_connected(_wifi_creds["ssid"], _wifi_creds["password"])
+                if up != wifi_was_up:
+                    # log the IP on reconnect - DHCP may hand out a NEW address,
+                    # and without this there's no way to know where the UI went
                     state.log_event(
                         "wifi",
-                        "down {}s - rescue hotspot open, dashboard at http://192.168.4.1".format(
-                            int(now - wifi_down_since)),
-                    )
-        except Exception as e:
-            print("wifi check error:", e)
-
-    # ---- Link health: is this connection real, or a zombie? ----
-    # A router can be up while its DHCP lease expired, its NAT table was
-    # cleared, or our own lwIP state wedged. In all of those isconnected()
-    # still reports True and the dashboard is unreachable - the failure
-    # that looks like "everything says fine but nothing responds".
-    #
-    # Skipped while the rescue hotspot is up (it owns the radio), during an
-    # OTA or calibration (both already occupy the loop), and while a valve
-    # is open (a recycle blocks for up to ~11s and valve timing comes
-    # first - the check simply runs on the next pass).
-    _health_every = getattr(config, "WIFI_HEALTH_CHECK_SEC", 900)
-    if (_health_every and wifi_was_up
-            and now - last_health_check >= _health_every
-            and not (rescue_mod and rescue_mod.rescue_active())
-            and not state.update_in_progress and not state.update_requested
-            and not state.calibration_busy
-            and not state.any_valve_open() and not _pending_valves):
-        last_health_check = now
-        try:
-            if wdt:
-                wdt.feed()
-            healthy = wifi.lan_healthy(
-                timeout=getattr(config, "WIFI_HEALTH_TIMEOUT_SEC", 3))
-            if wdt:
-                wdt.feed()
-
-            if healthy is None:
-                pass          # inconclusive - never act on a guess
-            elif healthy:
-                if lan_fail_streak:
-                    state.log_event(
-                        "wifi", "link healthy again after {} failed probe(s)".format(
-                            lan_fail_streak))
-                lan_fail_streak = 0
-                state.lan_ok = True
-            else:
-                lan_fail_streak += 1
-                state.lan_ok = False
-                # Escalate: one failure can be a blip, so only act on the
-                # second. A soft reconnect clears a stale association or an
-                # expired lease; a hard interface reset is what clears a
-                # wedged driver/lwIP state.
-                if lan_fail_streak == 1:
-                    state.log_event(
-                        "wifi", "gateway unreachable though associated - watching")
-                elif lan_fail_streak == 2:
-                    state.log_event("wifi", "gateway still unreachable - reconnecting")
-                    ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
-                    state.log_event(
-                        "wifi", "soft reconnect " + ("ok, IP: " + wifi.current_ip()
-                                                     if ok else "failed"))
+                        "reconnected, IP: " + wifi.current_ip() if up
+                        else "connection lost - retrying")
+                    wifi_was_up = up
+                if up:
+                    wifi_down_since = None
+                    if rescue_mod and rescue_mod.rescue_active():
+                        rescue_mod.stop_rescue_ap()
+                        state.log_event("wifi", "rescue hotspot closed")
                 else:
-                    state.log_event(
-                        "wifi", "gateway unreachable x{} - resetting the interface".format(
-                            lan_fail_streak))
-                    ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"],
-                                      hard=True)
-                    state.log_event(
-                        "wifi", "hard reset " + ("ok, IP: " + wifi.current_ip()
-                                                 if ok else "failed"))
-                    if not ok:
-                        # let the existing rescue-hotspot path take over
-                        wifi_was_up = False
-                        if wifi_down_since is None:
-                            wifi_down_since = now
-            if wdt:
-                wdt.feed()
-
-            # Second escalation: the LAN is fine but NTP has been failing
-            # for hours. That is usually just an ISP outage - which is why
-            # it does NOT recycle on its own - but if it persists something
-            # upstream of us may be stuck, so try exactly one reconnect and
-            # then leave it alone.
-            _stale = getattr(config, "NTP_STALE_RECYCLE_SEC", 6 * 3600)
-            if (_stale and state.time_synced and last_ntp_ok
-                    and healthy is not False
-                    and now - last_ntp_ok >= _stale
-                    and now - last_ntp_recycle >= _stale):
-                last_ntp_recycle = now
-                state.log_event(
-                    "wifi",
-                    "no NTP for {}h though the LAN is up - one reconnect".format(
-                        int((now - last_ntp_ok) / 3600)))
-                wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
-        except Exception as e:
-            print("link health check error:", e)
-
-    # answer captive-probe DNS while the rescue hotspot is up
-    if rescue_mod and rescue_mod.rescue_active():
-        try:
-            rescue_mod.poll_rescue(_wifi_creds)
-        except Exception as e:
-            print("rescue poll error:", e)
-
-    # clock self-heal: keep retrying NTP until it works
-    # NTP. Until the first success this retries every 5 min (schedules are
-    # held until the clock is real). AFTER that it keeps resyncing on a slow
-    # cadence: the ESP32's RTC drifts, and this used to stop forever once
-    # `time_synced` went True, so a planter left running for months would
-    # fire its schedules increasingly off the intended time.
-    _ntp_due = 300 if not state.time_synced else getattr(
-        config, "NTP_RESYNC_SEC", 3600)
-    if now - last_ntp_retry >= _ntp_due:
-        last_ntp_retry = now
-        if wdt:
-            wdt.feed()
-        if try_ntp_sync():
-            last_ntp_ok = time.time()
-        if wdt:
-            wdt.feed()
-
-    # This build has run long enough to be trusted - clear boot.py's
-    # failed-boot counter so a later crash isn't blamed on an old update.
-    if not boot_confirmed and now - state.boot_time >= _BOOT_CONFIRM_SEC:
-        try:
-            confirm_boot()
-        except Exception as e:
-            print("boot confirm error:", e)
-
-    # Daily OTA check at config.UPDATE_CHECK_HOUR. Only flags an update by
-    # default (UPDATE_AUTO_INSTALL=False) - installing reboots the board,
-    # which is the user's call for something running water valves.
-    _check_hour = getattr(config, "UPDATE_CHECK_HOUR", None)
-    if (_check_hour is not None and state.time_synced
-            and not state.any_valve_open() and not _pending_valves):
-        _lt = local_now()
-        _today = (_lt[0], _lt[1], _lt[2])
-        if _lt[3] == _check_hour and last_update_check_day != _today:
-            last_update_check_day = _today
-            try:
-                res = run_update_check(
-                    install=getattr(config, "UPDATE_AUTO_INSTALL", False))
-                if res.get("changed"):
-                    state.log_event("update", "update available: {}".format(
-                        ", ".join(res["changed"])))
+                    if wifi_down_since is None:
+                        wifi_down_since = now
+                    elif (getattr(config, "WIFI_RESCUE_AFTER_SEC", 0)
+                          and now - wifi_down_since >= config.WIFI_RESCUE_AFTER_SEC
+                          and not (rescue_mod and rescue_mod.rescue_active())):
+                        import wifi_setup as rescue_mod
+                        rescue_mod.start_rescue_ap()
+                        state.log_event(
+                            "wifi",
+                            "down {}s - rescue hotspot open, dashboard at http://192.168.4.1".format(
+                                int(now - wifi_down_since)),
+                        )
             except Exception as e:
-                print("daily update check error:", e)
+                print("wifi check error:", e)
 
-    try:
-        web.poll_once(timeout=0.2)
-    except Exception as e:
-        print("web poll error:", e)
+        # ---- Link health: is this connection real, or a zombie? ----
+        # A router can be up while its DHCP lease expired, its NAT table was
+        # cleared, or our own lwIP state wedged. In all of those isconnected()
+        # still reports True and the dashboard is unreachable - the failure
+        # that looks like "everything says fine but nothing responds".
+        #
+        # Skipped while the rescue hotspot is up (it owns the radio), during an
+        # OTA or calibration (both already occupy the loop), and while a valve
+        # is open (a recycle blocks for up to ~11s and valve timing comes
+        # first - the check simply runs on the next pass).
+        _health_every = getattr(config, "WIFI_HEALTH_CHECK_SEC", 900)
+        if (_health_every and wifi_was_up
+                and now - last_health_check >= _health_every
+                and not (rescue_mod and rescue_mod.rescue_active())
+                and not state.update_in_progress and not state.update_requested
+                and not state.calibration_busy
+                and not state.any_valve_open() and not _pending_valves):
+            last_health_check = now
+            try:
+                if wdt:
+                    wdt.feed()
+                healthy = wifi.lan_healthy(
+                    timeout=getattr(config, "WIFI_HEALTH_TIMEOUT_SEC", 3))
+                if wdt:
+                    wdt.feed()
 
-    # Dashboard-requested I2C bus scan. Runs here rather than in the HTTP
-    # handler: probing 128 addresses on a wedged bus can take seconds, and
-    # that would freeze the web server and delay the valve safety checks.
-    if state.scan_requested:
-        state.scan_requested = False
-        state.scan_busy = True
-        try:
-            if wdt:
-                wdt.feed()
-            found = i2c.scan()
-            state.scan_result = {"found": list(found), "at": time.time()}
-            print("i2c scan:", [hex(a) for a in found])
-        except Exception as e:
-            state.scan_result = {"found": [], "at": time.time(), "error": str(e)}
-            print("i2c scan failed:", e)
-        finally:
-            state.scan_busy = False
-            if wdt:
-                wdt.feed()
-
-    # Dashboard-requested sensor calibration. Like the update check below,
-    # this runs in the loop rather than the HTTP handler - averaging a probe
-    # takes ~10s and would otherwise freeze the web server and valve timing.
-    if state.calibration_requested:
-        _cal = state.calibration_requested
-        state.calibration_requested = None
-        state.calibration_busy = True
-        try:
-            if wdt:
-                wdt.feed()
-            _r = sample_zone_raw(_cal["zone"], _cal.get("seconds", 10), wdt)
-            _r["zone"] = _cal["zone"]
-            _r["point"] = _cal["point"]
-            if "error" not in _r:
-                # persist straight away: the user is standing there with the
-                # probe in the soil, and a reboot shouldn't lose the capture
-                _hw = settings_store.get()["hardware"]
-                _cals = _hw.setdefault("zone_calibration", {})
-                _entry = _cals.setdefault(_cal["zone"], {})
-                _entry["dry_raw" if _cal["point"] == "dry" else "wet_raw"] = _r["raw"]
-                settings_store.save()
-                state.log_event(
-                    "calibration",
-                    "{} {} point = {} (spread {})".format(
-                        _cal["zone"], _cal["point"], _r["raw"], _r["spread"]))
-            state.calibration_result = _r
-            print("calibration:", _r)
-        except Exception as e:
-            state.calibration_result = {"error": str(e), "zone": _cal.get("zone")}
-            print("calibration error:", e)
-        finally:
-            state.calibration_busy = False
-            if wdt:
-                wdt.feed()
-
-    # Dashboard-requested update check/apply. Runs HERE, not in the HTTP
-    # handler: a TLS handshake can block for many seconds (or indefinitely
-    # on some builds), and doing that inside poll_once() freezes the whole
-    # loop - no responses, no valve timing. The browser already got its
-    # "queued" reply and polls /api/status for the result.
-    if state.update_requested:
-        _req = state.update_requested
-        state.update_requested = None
-        if wdt:
-            wdt.feed()  # the call below can take the full UPDATE_TIMEOUT_SEC
-        try:
-            # Print the C-heap state BEFORE the attempt: an HTTPS handshake
-            # needs a big contiguous block, and if it isn't there the call
-            # can hang with no way to interrupt it. This line is the last
-            # thing you'll see if that happens.
-            gc.collect()
-            _f, _l = idf_heap()
-            print("update: starting {} (IDF free={} largest={})".format(
-                _req, _f, _l))
-            _res = run_update_check(install=(_req == "apply"))
-            if _res.get("ok"):
-                _changed = _res.get("changed") or []
-                if _req == "apply":
-                    state.update_last_result = "installed {} file(s)".format(
-                        len(_res.get("installed") or []))
-                elif _changed:
-                    state.update_last_result = "update available ({} file(s))".format(
-                        len(_changed))
+                if healthy is None:
+                    pass          # inconclusive - never act on a guess
+                elif healthy:
+                    if lan_fail_streak:
+                        state.log_event(
+                            "wifi", "link healthy again after {} failed probe(s)".format(
+                                lan_fail_streak))
+                    lan_fail_streak = 0
+                    state.lan_ok = True
                 else:
-                    state.update_last_result = "up to date"
+                    lan_fail_streak += 1
+                    state.lan_ok = False
+                    # Escalate: one failure can be a blip, so only act on the
+                    # second. A soft reconnect clears a stale association or an
+                    # expired lease; a hard interface reset is what clears a
+                    # wedged driver/lwIP state.
+                    if lan_fail_streak == 1:
+                        state.log_event(
+                            "wifi", "gateway unreachable though associated - watching")
+                    elif lan_fail_streak == 2:
+                        state.log_event("wifi", "gateway still unreachable - reconnecting")
+                        ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
+                        state.log_event(
+                            "wifi", "soft reconnect " + ("ok, IP: " + wifi.current_ip()
+                                                         if ok else "failed"))
+                    else:
+                        state.log_event(
+                            "wifi", "gateway unreachable x{} - resetting the interface".format(
+                                lan_fail_streak))
+                        ok = wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"],
+                                          hard=True)
+                        state.log_event(
+                            "wifi", "hard reset " + ("ok, IP: " + wifi.current_ip()
+                                                     if ok else "failed"))
+                        if not ok:
+                            # let the existing rescue-hotspot path take over
+                            wifi_was_up = False
+                            if wifi_down_since is None:
+                                wifi_down_since = now
+                if wdt:
+                    wdt.feed()
+
+                # Second escalation: the LAN is fine but NTP has been failing
+                # for hours. That is usually just an ISP outage - which is why
+                # it does NOT recycle on its own - but if it persists something
+                # upstream of us may be stuck, so try exactly one reconnect and
+                # then leave it alone.
+                _stale = getattr(config, "NTP_STALE_RECYCLE_SEC", 6 * 3600)
+                if (_stale and state.time_synced and last_ntp_ok
+                        and healthy is not False
+                        and now - last_ntp_ok >= _stale
+                        and now - last_ntp_recycle >= _stale):
+                    last_ntp_recycle = now
+                    state.log_event(
+                        "wifi",
+                        "no NTP for {}h though the LAN is up - one reconnect".format(
+                            int((now - last_ntp_ok) / 3600)))
+                    wifi.recycle(_wifi_creds["ssid"], _wifi_creds["password"])
+            except Exception as e:
+                print("link health check error:", e)
+
+        # answer captive-probe DNS while the rescue hotspot is up
+        if rescue_mod and rescue_mod.rescue_active():
+            try:
+                rescue_mod.poll_rescue(_wifi_creds)
+            except Exception as e:
+                print("rescue poll error:", e)
+
+        # clock self-heal: keep retrying NTP until it works
+        # NTP. Until the first success this retries every 5 min (schedules are
+        # held until the clock is real). AFTER that it keeps resyncing on a slow
+        # cadence: the ESP32's RTC drifts, and this used to stop forever once
+        # `time_synced` went True, so a planter left running for months would
+        # fire its schedules increasingly off the intended time.
+        _ntp_due = 300 if not state.time_synced else getattr(
+            config, "NTP_RESYNC_SEC", 3600)
+        if now - last_ntp_retry >= _ntp_due:
+            last_ntp_retry = now
+            if wdt:
+                wdt.feed()
+            if try_ntp_sync():
+                last_ntp_ok = time.time()
+            if wdt:
+                wdt.feed()
+
+        # This build has run long enough to be trusted - clear boot.py's
+        # failed-boot counter so a later crash isn't blamed on an old update.
+        if not boot_confirmed and now - state.boot_time >= _BOOT_CONFIRM_SEC:
+            try:
+                confirm_boot()
+            except Exception as e:
+                print("boot confirm error:", e)
+
+        # Daily OTA check at config.UPDATE_CHECK_HOUR. Only flags an update by
+        # default (UPDATE_AUTO_INSTALL=False) - installing reboots the board,
+        # which is the user's call for something running water valves.
+        _check_hour = getattr(config, "UPDATE_CHECK_HOUR", None)
+        if (_check_hour is not None and state.time_synced
+                and not state.any_valve_open() and not _pending_valves):
+            _lt = local_now()
+            _today = (_lt[0], _lt[1], _lt[2])
+            if _lt[3] == _check_hour and last_update_check_day != _today:
+                last_update_check_day = _today
+                try:
+                    res = run_update_check(
+                        install=getattr(config, "UPDATE_AUTO_INSTALL", False))
+                    if res.get("changed"):
+                        state.log_event("update", "update available: {}".format(
+                            ", ".join(res["changed"])))
+                except Exception as e:
+                    print("daily update check error:", e)
+
+
+        # Dashboard-requested I2C bus scan. Runs here rather than in the HTTP
+        # handler: probing 128 addresses on a wedged bus can take seconds, and
+        # that would freeze the web server and delay the valve safety checks.
+        if state.scan_requested:
+            state.scan_requested = False
+            state.scan_busy = True
+            try:
+                if wdt:
+                    wdt.feed()
+                found = i2c.scan()
+                state.scan_result = {"found": list(found), "at": time.time()}
+                print("i2c scan:", [hex(a) for a in found])
+            except Exception as e:
+                state.scan_result = {"found": [], "at": time.time(), "error": str(e)}
+                print("i2c scan failed:", e)
+            finally:
+                state.scan_busy = False
+                if wdt:
+                    wdt.feed()
+
+        # Dashboard-requested sensor calibration. Like the update check below,
+        # this runs in the loop rather than the HTTP handler - averaging a probe
+        # takes ~10s and would otherwise freeze the web server and valve timing.
+        if state.calibration_requested:
+            _cal = state.calibration_requested
+            state.calibration_requested = None
+            state.calibration_busy = True
+            try:
+                if wdt:
+                    wdt.feed()
+                _r = sample_zone_raw(_cal["zone"], _cal.get("seconds", 10), wdt)
+                _r["zone"] = _cal["zone"]
+                _r["point"] = _cal["point"]
+                if "error" not in _r:
+                    # persist straight away: the user is standing there with the
+                    # probe in the soil, and a reboot shouldn't lose the capture
+                    _hw = settings_store.get()["hardware"]
+                    _cals = _hw.setdefault("zone_calibration", {})
+                    _entry = _cals.setdefault(_cal["zone"], {})
+                    _entry["dry_raw" if _cal["point"] == "dry" else "wet_raw"] = _r["raw"]
+                    settings_store.save()
+                    state.log_event(
+                        "calibration",
+                        "{} {} point = {} (spread {})".format(
+                            _cal["zone"], _cal["point"], _r["raw"], _r["spread"]))
+                state.calibration_result = _r
+                print("calibration:", _r)
+            except Exception as e:
+                state.calibration_result = {"error": str(e), "zone": _cal.get("zone")}
+                print("calibration error:", e)
+            finally:
+                state.calibration_busy = False
+                if wdt:
+                    wdt.feed()
+
+        # Dashboard-requested update check/apply. Runs HERE, not in the HTTP
+        # handler: a TLS handshake can block for many seconds (or indefinitely
+        # on some builds), and doing that inside poll_once() freezes the whole
+        # loop - no responses, no valve timing. The browser already got its
+        # "queued" reply and polls /api/status for the result.
+        if state.update_requested:
+            _req = state.update_requested
+            state.update_requested = None
+            if wdt:
+                wdt.feed()  # the call below can take the full UPDATE_TIMEOUT_SEC
+            try:
+                # Print the C-heap state BEFORE the attempt: an HTTPS handshake
+                # needs a big contiguous block, and if it isn't there the call
+                # can hang with no way to interrupt it. This line is the last
+                # thing you'll see if that happens.
+                gc.collect()
+                _f, _l = idf_heap()
+                print("update: starting {} (IDF free={} largest={})".format(
+                    _req, _f, _l))
+                _res = run_update_check(install=(_req == "apply"))
+                if _res.get("ok"):
+                    _changed = _res.get("changed") or []
+                    if _req == "apply":
+                        state.update_last_result = "installed {} file(s)".format(
+                            len(_res.get("installed") or []))
+                    elif _changed:
+                        state.update_last_result = "update available ({} file(s))".format(
+                            len(_changed))
+                    else:
+                        state.update_last_result = "up to date"
+                else:
+                    state.update_last_result = "failed: {}".format(
+                        _res.get("error") or "unknown error")
+                print("update:", state.update_last_result)
+            except Exception as e:
+                state.update_last_result = "failed: {}".format(e)
+                state.update_error = str(e)
+                print("update error:", e)
+            if wdt:
+                wdt.feed()
+
+        # Status LED. Non-blocking: the blink phase comes from the millisecond
+        # clock, and the loop iterates every ~200ms (the select timeout), which
+        # bounds how fast it can flash.
+        tms = time.ticks_ms()
+        _net_ok = wifi_was_up and web.server_running()
+
+        if status_rgb is not None:
+            # Colour says what's happening - readable at a glance from across a
+            # garden, unlike counting blink rates. Most specific state wins.
+            if state.update_in_progress or state.update_requested:
+                _rgb_set((40, 0, 40))                      # purple: updating
+            elif state.any_valve_open():
+                # breathing blue while water is actually flowing
+                _phase = (tms // 40) % 100
+                _lvl = 10 + (_phase if _phase < 50 else 100 - _phase)
+                _rgb_set((0, 0, _lvl))
+            elif not wifi_was_up:
+                _rgb_set((60, 20, 0) if (tms // 300) % 2 == 0 else (0, 0, 0))  # amber blink
+            elif not web.server_running():
+                _rgb_set((60, 0, 0) if (tms // 800) % 2 == 0 else (0, 0, 0))   # red blink
+            elif state.startup_grace_logged and (
+                    time.time() - state.boot_time) < getattr(config, "STARTUP_GRACE_SEC", 60):
+                _rgb_set((30, 20, 0))                      # dim amber: settling
             else:
-                state.update_last_result = "failed: {}".format(
-                    _res.get("error") or "unknown error")
-            print("update:", state.update_last_result)
-        except Exception as e:
-            state.update_last_result = "failed: {}".format(e)
-            state.update_error = str(e)
-            print("update error:", e)
-        if wdt:
-            wdt.feed()
+                _rgb_set((0, 12, 0))                       # dim green: all good
+        elif status_led is not None:
+            if _net_ok:
+                status_led.value(1)  # solid: all good
+            else:
+                # fast blink (~2.5Hz) = WiFi down; slow (~0.5Hz) = web server down
+                half_period = 200 if not wifi_was_up else 1000
+                status_led.value(1 if (tms // half_period) % 2 == 0 else 0)
 
-    # Status LED. Non-blocking: the blink phase comes from the millisecond
-    # clock, and the loop iterates every ~200ms (the select timeout), which
-    # bounds how fast it can flash.
-    tms = time.ticks_ms()
-    _net_ok = wifi_was_up and web._server_sock is not None
+        window = time.ticks_diff(tms, last_load_calc)
+        if window >= 5000:
+            idle = _idle_ms
+            _idle_ms = 0
+            state.cpu_percent = max(0, min(100, round(100 * (window - idle) / window)))
+            last_load_calc = tms
+            state.idf_free, state.idf_largest = idf_heap()
+            try:
+                state.rssi = wifi.rssi()
+            except Exception:
+                state.rssi = None
+            if now - last_idf_print >= 60:
+                last_idf_print = now
+                # RSSI sits alongside the heap figures deliberately: together
+                # they say whether a WiFi problem is memory, RF, or neither.
+                print("IDF C-heap free:", state.idf_free,
+                      "largest block:", state.idf_largest,
+                      "| GC free:", gc.mem_free(),
+                      "| RSSI:", state.rssi)
 
-    if status_rgb is not None:
-        # Colour says what's happening - readable at a glance from across a
-        # garden, unlike counting blink rates. Most specific state wins.
-        if state.update_in_progress or state.update_requested:
-            _rgb_set((40, 0, 40))                      # purple: updating
-        elif state.any_valve_open():
-            # breathing blue while water is actually flowing
-            _phase = (tms // 40) % 100
-            _lvl = 10 + (_phase if _phase < 50 else 100 - _phase)
-            _rgb_set((0, 0, _lvl))
-        elif not wifi_was_up:
-            _rgb_set((60, 20, 0) if (tms // 300) % 2 == 0 else (0, 0, 0))  # amber blink
-        elif web._server_sock is None:
-            _rgb_set((60, 0, 0) if (tms // 800) % 2 == 0 else (0, 0, 0))   # red blink
-        elif state.startup_grace_logged and (
-                time.time() - state.boot_time) < getattr(config, "STARTUP_GRACE_SEC", 60):
-            _rgb_set((30, 20, 0))                      # dim amber: settling
-        else:
-            _rgb_set((0, 12, 0))                       # dim green: all good
-    elif status_led is not None:
-        if _net_ok:
-            status_led.value(1)  # solid: all good
-        else:
-            # fast blink (~2.5Hz) = WiFi down; slow (~0.5Hz) = web server down
-            half_period = 200 if not wifi_was_up else 1000
-            status_led.value(1 if (tms // half_period) % 2 == 0 else 0)
+        # optional nightly maintenance reboot (config.DAILY_REBOOT_HOUR):
+        # valves close on boot, so a quiet-hour reboot is invisible and wipes
+        # any slow degradation before it can matter
+        _reboot_hour = getattr(config, "DAILY_REBOOT_HOUR", None)
+        if (_reboot_hour is not None and state.time_synced
+                and not state.any_valve_open() and not _pending_valves
+                and time.time() - state.boot_time > 3600):
+            lt = local_now()
+            if lt[3] == _reboot_hour and lt[4] == 0:
+                state.log_event("reboot", "scheduled nightly maintenance reboot")
+                time.sleep(1)
+                machine.reset()
 
-    window = time.ticks_diff(tms, last_load_calc)
-    if window >= 5000:
-        idle = web.take_idle_ms()
-        state.cpu_percent = max(0, min(100, round(100 * (window - idle) / window)))
-        last_load_calc = tms
-        state.idf_free, state.idf_largest = idf_heap()
-        try:
-            state.rssi = wifi.rssi()
-        except Exception:
-            state.rssi = None
-        if now - last_idf_print >= 60:
-            last_idf_print = now
-            # RSSI sits alongside the heap figures deliberately: together
-            # they say whether a WiFi problem is memory, RF, or neither.
-            print("IDF C-heap free:", state.idf_free,
-                  "largest block:", state.idf_largest,
-                  "| GC free:", gc.mem_free(),
-                  "| RSSI:", state.rssi)
+        # proactive GC keeps the heap defragmented over long uptimes - without
+        # it, hours of small allocations leave no contiguous room for the
+        # bigger ones (JSON responses, WiFi buffers)
+        gc.collect()
+        # Yield. Everything above is synchronous and bounded; this is the
+        # only place the loop gives the event loop a turn, so the web
+        # server's tasks run here.
+        _idle_ms += _LOOP_SLEEP_MS
+        await asyncio.sleep_ms(_LOOP_SLEEP_MS)
 
-    # optional nightly maintenance reboot (config.DAILY_REBOOT_HOUR):
-    # valves close on boot, so a quiet-hour reboot is invisible and wipes
-    # any slow degradation before it can matter
-    _reboot_hour = getattr(config, "DAILY_REBOOT_HOUR", None)
-    if (_reboot_hour is not None and state.time_synced
-            and not state.any_valve_open() and not _pending_valves
-            and time.time() - state.boot_time > 3600):
-        lt = local_now()
-        if lt[3] == _reboot_hour and lt[4] == 0:
-            state.log_event("reboot", "scheduled nightly maintenance reboot")
-            time.sleep(1)
-            machine.reset()
 
-    # proactive GC keeps the heap defragmented over long uptimes - without
-    # it, hours of small allocations leave no contiguous room for the
-    # bigger ones (JSON responses, WiFi buffers)
-    gc.collect()
+async def _run():
+    """Server and control loop as peers.
+
+    The server is started here rather than in web.init() because
+    asyncio.start_server() must be awaited. A failure is not fatal -
+    watering has to run with or without a dashboard - and _main_loop
+    retries it every 30 seconds."""
+    try:
+        if not await web.start_server():
+            state.log_event("web", "server start failed - will retry from loop")
+    except Exception as e:
+        print("web server start failed (will retry from loop):", e)
+    await _main_loop()
+
+
+try:
+    asyncio.run(_run())
+finally:
+    # A crash out of the event loop must not leave a valve open.
+    try:
+        _safe_valve_pins_now()
+    except Exception:
+        pass
