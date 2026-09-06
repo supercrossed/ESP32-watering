@@ -65,6 +65,31 @@ foreach ($m in $modules) {
 Copy-Item (Join-Path $SRC "main.py"), (Join-Path $SRC "config.py"), (Join-Path $SRC "index.html") build\
 Copy-Item (Join-Path $SRC "boot.py") build\ -ErrorAction SilentlyContinue
 
+# ---- Pre-compress the dashboard ------------------------------------------
+# index.html is ~101KB and the device's whole ESP-IDF C heap is ~33KB.
+# Serving it uncompressed filled lwIP's buffers faster than they drained:
+# measured right after one page load the C heap sat at 1328 bytes free with
+# a 960-byte largest block, and every other request - including the
+# dashboard's own 5s poll - then blocked for ~31 seconds. That is the
+# "web UI goes down periodically" fault, self-inflicted by the page load.
+# Compressed it is ~29KB. web.py serves this .gz whenever the browser sends
+# Accept-Encoding: gzip and falls back to the plain file otherwise.
+$htmlIn = Join-Path $SRC "index.html"
+$gzOut = Join-Path (Get-Location) "build\index.html.gz"
+if (Test-Path $htmlIn) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $bytes = [System.IO.File]::ReadAllBytes($htmlIn)
+    $mem = New-Object System.IO.MemoryStream
+    $gz = New-Object System.IO.Compression.GZipStream(
+        $mem, [System.IO.Compression.CompressionLevel]::Optimal)
+    $gz.Write($bytes, 0, $bytes.Length)
+    $gz.Close()
+    [System.IO.File]::WriteAllBytes($gzOut, $mem.ToArray())
+    $mem.Close()
+    Write-Host ("  {0}\index.html -> build\index.html.gz  ({1} -> {2} bytes)" -f `
+        $SRC, $bytes.Length, (Get-Item $gzOut).Length)
+}
+
 # ---- Regenerate config.example.py from config.py --------------------------
 # config.py is gitignored (it holds real WiFi credentials), so the repo ships
 # a scrubbed copy. Deriving it here rather than maintaining it by hand means

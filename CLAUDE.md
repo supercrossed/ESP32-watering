@@ -35,8 +35,16 @@ available.
 
 - Target runtime is **MicroPython on ESP32**, not desktop Python. Only
   MicroPython-available modules exist: `machine`, `network`, `socket`,
-  `select`, `time`, `ntptime`, `ujson`. There is **no** `asyncio` assumed,
-  no `zipfile`, no `threading`, no `pip` packages.
+  `select`, `time`, `ntptime`, `ujson`. No `zipfile`, no `threading`, no
+  `pip` packages.
+  **`asyncio` IS available** (verified on ESP32-S3 firmware v1.28.0:
+  `asyncio.start_server` and `select.poll` both present). The original
+  "no asyncio" rule was a RAM-era assumption; it is superseded for the
+  ESP32-S3 build, where the blocking-socket web server has a reproducible
+  watchdog hang under concurrent connections (see Reliability). Do not
+  adopt asyncio piecemeal - the win comes from the server being entirely
+  non-blocking, and a single blocking call in a handler would stall every
+  connection plus the valve cutoff.
 - **RAM is tiny** (~100KB usable). Avoid buffering large data, avoid
   building big in-memory structures. History lists are intentionally capped.
 - **There are TWO heaps.** The Python GC heap (what `gc.mem_free()` shows)
@@ -53,10 +61,38 @@ available.
   old `.py` when converting. C-heap health is sampled via
   `esp32.idf_heap_info` into `state.idf_free`/`idf_largest`, printed
   each minute and exposed in `/api/status`.
+  **`main.py` sits ON a cliff, and its CODE size is what decides.** It is
+  the one module still compiled on the device at boot: at 805 top-level
+  statements the board boots with 79400 bytes of C heap free, at 816 it
+  boots with 26148 and the WiFi driver dies with
+  `OSError: WiFi Out of Memory`. Eleven statements. Comments are FREE - a
+  3KB comment-only pad changed the number not at all - so document
+  generously but move CODE out to a `.mpy` module. Check the statement
+  count before adding anything here.
 - The web server is a **hand-rolled synchronous** server polled from the
   main loop via `web.poll_once()`. It must never block — the main loop also
   handles valve safety cutoffs and scheduling. Do not introduce blocking
   reads without timeouts.
+  **`settimeout()` does not bound `send()` on this port.** A single
+  1024-byte send was measured blocking for 30 seconds on a socket with a
+  3-second timeout, freezing the whole dashboard (and delaying the valve
+  cutoff) for one client that had gone away. `_send_all` therefore switches
+  the socket to non-blocking and enforces its own deadline. Assume the same
+  of any other socket call until measured.
+  **Every socket write is capped at 512 bytes** (`_SEND_CHUNK`,
+  `_JSON_FLUSH_BYTES`, `_SEND_FILE_CHUNK`). Measured on WROOM-32: responses
+  up to 947 bytes returned in <0.7s and responses from 1025 bytes up always
+  failed, with 32KB of heap free - so this is not a memory limit, it is a
+  write-size limit. Never raise these above 512 without re-measuring.
+  **Any response that grows with the user's config must stream** through
+  `_send_json` / `_json_fragments`, never a single `json.dumps()`. One 6KB
+  string is enough to grow the GC heap out of the C heap and leave lwIP
+  unable to allocate a TCP segment - at which point `send()` blocks forever
+  on the response HEADER, not the body. Peak allocation is now 145 bytes on
+  a fully populated kit config; it was 5159.
+  Content-Length is measured in **bytes**, not characters: `json.dumps()`
+  emits non-ASCII raw, so a zone name with an accent otherwise truncates
+  the body and the browser hangs waiting for the rest.
 - Files run on the device: `main.py` auto-runs at boot. Changing pin/hardware
   objects (I2C, valve Pin) requires a **reboot** to take effect because they
   are constructed once at boot.
@@ -114,7 +150,18 @@ available.
   in config.ZONES — it's runtime state, captured via the dashboard's
   Calibrate button. `main.build_zone_list()` assembles zones from
   zone_channels + zone_calibration for both the moisture loop and the
-  calibration endpoint. `main.sample_zone_raw()` averages a probe for ~10s
+  calibration endpoint. `moisture.build_zone_list()` and
+  `moisture.sample_zone_raw()` live here rather than in main.py because
+  main.py's code size is load-bearing (see the two-heap note above);
+  main.py keeps thin aliases.
+  **`moisture.online_boards()` gates every read.** Reading an ADS1115 that
+  is not on the bus blocks the main loop ~0.8s PER ZONE (the `I2C()`
+  timeout is not honoured by this port), and three dead zones stretched the
+  loop from 15s to 45s - which timed out every dashboard request and looked
+  exactly like a network fault. A bus scan costs ~30ms, so presence is
+  probed (every `config.ADS_PROBE_SEC`, default 60s) and NO reads are
+  issued when nothing answers. It logs why and recovers by itself when the
+  wiring is fixed. `main.sample_zone_raw()` averages a probe for ~10s
   and reports the spread; it runs in the MAIN LOOP (queued via
   `state.calibration_requested`), never in an HTTP handler.
 - `valve.py` — solenoid control via IRF520 MOSFET gate pin, plus a hard
@@ -185,6 +232,18 @@ available.
   `MemoryError` on a fragmented ESP32 heap even with plenty of total free
   memory. Must be uploaded alongside the `.py` files; `main.py` will crash
   on the first page load if it's missing.
+  **Served gzipped.** `build_mpy.ps1` pre-compresses it to
+  `build/index.html.gz` (~101KB -> ~29KB) and `_send_file` serves that when
+  the client sends `Accept-Encoding: gzip`, falling back to the plain file.
+  Upload BOTH.
+  **The dashboard must not fetch in parallel.** `initDashboard()` awaits
+  every call and the two `Promise.all` pairs were made sequential on
+  purpose: firing them together opened 6-7 sockets at once, which dropped
+  the C heap from ~31KB to 760 bytes for the duration and failed anything
+  else arriving in that window - a second tab, a refresh, the 5s poll. The
+  same requests one at a time are stable indefinitely (220 requests, flat
+  heap). The periodic timers are staggered because 5s/15s/60s all divide
+  into 60 and otherwise fire as one burst every minute.
 - `main.py` — boot sequence + main loop: safety cutoff, active-watering
   close, moisture checks, schedule checks, web polling.
 
@@ -403,6 +462,36 @@ block and checked with `node --check`.
 - The web uploader accepts `.py`, `.mpy`, `.html`; saving a file DELETES
   its `.py`/`.mpy` counterpart on the device so a stale twin can never
   shadow the fresh upload.
+- WiFi modem power-save is disabled (`config.WIFI_POWER_SAVE = False`).
+  The MicroPython default (`PM_PERFORMANCE`) sleeps the radio between DTIM
+  beacons: ping averaged 173ms with 0% packet loss, which never looks like
+  a fault, and `/api/status` took 2586ms. With it off, 10ms and 128ms.
+- Load shedding: below 2048 bytes of contiguous C heap the server answers a
+  tiny `503 Retry-After` rather than attempting a real response. The
+  threshold is deliberately far below normal operation - an earlier value
+  of 8192 sat exactly at one board's degraded steady state and refused
+  nearly everything, doing more harm than the condition it guarded.
+- **KNOWN, NOT OURS: the listener stalls intermittently.** The
+  device stops accepting for tens of seconds while staying healthy (loop
+  cycling, watchdog fed, 8MB free, answering pings), then recovers by
+  itself. **Do not try to fix this in web.py or main.py.** It has been
+  isolated: `tools/minimal_server_repro.py` is a ~40 line server with none
+  of this firmware in it - no watchdog, I2C, LED, flash writes, streaming
+  or keep-alive - and it reproduces the stall exactly. The fault is in
+  MicroPython/lwIP on this platform. The trigger is NOT understood and is
+  not reliably tied to refresh rate - it happens under light polling too.
+  Full brief: docs/listener-stall-handoff.md
+  Already tried and measured as no help: an asyncio server (task per
+  connection), the ESP32-S3 with 260x the C heap, keep-alive (26 requests
+  per socket instead of 11 sockets per page), and rebuilding the listening
+  socket. Also ruled out: memory, gc.collect(), the filesystem, I2C
+  timeouts and the status LED.
+  Two blind spots in `poll_once` DO remain real and are worth fixing if
+  anyone touches it: every `accept()` error is treated as "nothing
+  waiting", and the health check asks whether the socket OBJECT exists,
+  which stays true - so main.py's 30s retry never fires. A fix for those
+  was written and reverted because it regressed a stable device; see the
+  `wip/asyncio-server` branch and docs/CHANGELOG.md 2026-09-06.
 - **Every length that comes off the network is bounded.** `Content-Length`
   is client-supplied: request bodies cap at `_MAX_BODY_BYTES` (16KB),
   uploads at `_MAX_UPLOAD_BYTES` (512KB) with a `_UPLOAD_DEADLINE_SEC`

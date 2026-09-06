@@ -98,6 +98,36 @@ def start_server():
     return True
 
 
+# A LAN request completes in tens of milliseconds. Eight seconds was far
+# too generous: a client that opened a connection and went away (a closed
+# tab, a timed-out fetch) held the whole main loop for that long, and the
+# dashboard's 5s polling then queued faster than the device could drain.
+# Three seconds still leaves ample room to stream the ~100KB dashboard to a
+# slow client, while bounding what one dead connection can cost.
+# Bytes handed to a single send() call. One TCP segment's worth keeps
+# each write small and predictable.
+# Bytes per socket write. MEASURED, not chosen for tidiness: on this board
+# a single send() of 1024 bytes blocks until the socket timeout fires,
+# while 512 goes out in milliseconds. The endpoint sweep was unambiguous -
+# every response up to 947 bytes returned in under 0.7s and every response
+# from 1025 bytes up failed, because the first flush was the one 1024-byte
+# write. It is not memory: the C heap had 32560 bytes free with a
+# 29696-byte largest block at the moment it stalled.
+#
+# The signature is a write that cannot be queued in one piece - lwIP's send
+# buffer is around a segment, so a 1024-byte write plus the 92-byte header
+# already in flight does not fit, and the write waits rather than doing a
+# partial one. 512 always fits. Throughput is unaffected (the 6.2KB pin map
+# serves in 0.30s either way) because this bounds the write size, not the
+# window.
+_SEND_CHUNK = 512
+_CONN_TIMEOUT_SEC = 3.0
+# Requests handled per poll_once() call, and the wall-clock ceiling for the
+# whole batch.
+_MAX_CONNS_PER_POLL = 4
+_POLL_BUDGET_MS = 1200
+
+
 # Time spent waiting in select() is the system's idle time - everything
 # else is work. main.py reads this every few seconds to compute the
 # "CPU load" figure shown in the dashboard.
@@ -111,9 +141,90 @@ def take_idle_ms():
     return v
 
 
+# Refuse work below this much contiguous ESP-IDF C heap (the heap lwIP
+# takes its TCP buffers from - NOT the Python GC heap).
+#
+# Why this exists: with a single client the server is stable indefinitely -
+# 220 requests across 20 full page loads with the heap flat. With TWO
+# clients (a browser open while something else polls) connections overlap,
+# and a client that gives up mid-response leaves lwIP retransmitting to
+# nobody, holding its buffers for minutes. A few of those and memory is
+# tight; tight memory makes responses slow; slow responses make more
+# clients give up. That spiral does not recover on its own - measured, the
+# C heap sat at 508 bytes free / 208 largest and was still dead 400 seconds
+# after all traffic stopped, so the dashboard was gone until a reboot.
+#
+# Shedding load breaks the spiral. A 503 is a few dozen bytes and always
+# fits, the loop stays fast, the stuck buffers time out, and the device
+# recovers by itself. An honest "busy, retry" beats a device that needs
+# the EN button.
+#
+# Normal operation sits at 18-31KB largest, and collapse was at 208 bytes,
+# so this floor is far below healthy traffic and far above the spiral.
+# MEASURED, and set low on purpose. An earlier value of 8192 was a
+# mistake: under real browser use this device settles at ~7936 largest
+# block, so that floor refused nearly every request and showed "busy"
+# instead of the dashboard - the guard was doing more damage than the
+# condition it guarded against. The device serves fine at 8KB; genuine
+# collapse is at ~200-800 bytes, which is what this is for.
+_MIN_SERVE_BLOCK = 2048
+
+_shed_count = 0
+# NOTE: recycling the listening socket was tried here and REMOVED. It
+# fires, main.py rebuilds the listener - and the C heap stays exactly
+# where it was (measured: 9668 free before and after). The lost memory is
+# not held by our sockets, so closing them reclaims nothing. Do not
+# re-add it without new evidence.
+
+
+_last_heap_check = None
+_last_heap_largest = 0
+
+
+def _largest_c_block():
+    """Largest contiguous ESP-IDF C-heap block, sampled at most once a
+    second.
+
+    Deliberately NOT read from state.idf_largest: main.py refreshes that
+    only every 5 seconds, and it stops refreshing entirely while the loop
+    is stalled - which is precisely when this guard has to fire. A stale
+    healthy number would keep the door open through the collapse. Falls
+    back to main.py's sample only if esp32.idf_heap_info is unavailable."""
+    global _last_heap_check, _last_heap_largest
+    now = time.ticks_ms()
+    if (_last_heap_check is not None
+            and time.ticks_diff(now, _last_heap_check) < 1000):
+        return _last_heap_largest
+    _last_heap_check = now
+    try:
+        import esp32
+        largest = 0
+        for region in esp32.idf_heap_info(esp32.HEAP_DATA):
+            if region[2] > largest:
+                largest = region[2]
+        _last_heap_largest = largest
+    except Exception:
+        _last_heap_largest = getattr(state, "idf_largest", 0) or 0
+    return _last_heap_largest
+
+
+def _overloaded():
+    """True when the C heap is too fragmented to serve a real response."""
+    largest = _largest_c_block()
+    return 0 < largest < _MIN_SERVE_BLOCK
+
+
 def poll_once(timeout=0.2):
-    """Call this frequently from the main loop. Handles at most one
-    incoming connection per call so it never stalls the rest of the app."""
+    """Service pending HTTP connections. Call frequently from the main loop.
+
+    Handles up to _MAX_CONNS_PER_POLL requests, bounded by a wall-clock
+    budget, instead of exactly one. Serving one per loop pass was a
+    self-sustaining collapse: the dashboard polls every 5s, a stalled
+    connection could occupy the loop for the whole socket timeout, and any
+    request that arrived meanwhile queued behind it. Once the device fell
+    behind it never caught up - the backlog grew, the page half-loaded, and
+    more tabs made it worse. Draining lets a burst clear in one pass, while
+    the budget keeps valve timing and the watchdog serviced."""
     global _idle_ms
     if _server_sock is None:
         return
@@ -126,26 +237,50 @@ def poll_once(timeout=0.2):
         _idle_ms += time.ticks_diff(time.ticks_ms(), t0)
     if not r:
         return
-    try:
-        cl, addr = _server_sock.accept()
-    except OSError:
-        return
-    try:
-        _handle(cl)
-    except Exception as e:
-        print("web handler error:", e)
-    finally:
+
+    started = time.ticks_ms()
+    for _ in range(_MAX_CONNS_PER_POLL):
         try:
-            cl.close()
+            cl, addr = _server_sock.accept()
         except OSError:
-            pass
+            return          # nothing else waiting
+        try:
+            # Shed rather than spiral: serving a full response with almost
+            # no contiguous C heap is what turns a slow patch into a
+            # permanent wedge.
+            if _overloaded():
+                _send_busy(cl)
+            else:
+                _handle(cl)
+        except Exception as e:
+            print("web handler error:", e)
+        finally:
+            try:
+                cl.close()
+            except OSError:
+                pass
+        # Never hold the loop longer than the budget: valve cutoffs and the
+        # watchdog run out there.
+        if time.ticks_diff(time.ticks_ms(), started) > _POLL_BUDGET_MS:
+            return
+        try:
+            more, _, _ = select.select([_server_sock], [], [], 0)
+        except OSError:
+            return
+        if not more:
+            return
+
 
 
 def _handle(cl):
-    cl.settimeout(8.0)
+    cl.settimeout(_CONN_TIMEOUT_SEC)
     header_part, leftover = _read_headers(cl)
     if not header_part:
         return
+    # Cheap enough to do on every request, and it decides whether the 101KB
+    # dashboard goes out compressed - which is what keeps the lwIP buffers
+    # inside the C heap (see _send_file).
+    gzip_ok = b"gzip" in header_part.lower()
     try:
         lines = header_part.split(b"\r\n")
         method, path, _ = lines[0].decode().split(" ")
@@ -197,9 +332,9 @@ def _handle(cl):
     body = _read_body(cl, header_part, leftover)
 
     if path == "/" and method == "GET":
-        _send_file(cl, INDEX_HTML_PATH, "text/html")
+        _send_file(cl, INDEX_HTML_PATH, "text/html", gzip_ok)
     elif path == "/api/status" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(_status_payload()))
+        _send_json(cl, _status_payload())
     elif path == "/api/history" and method == "GET":
         # ?hours=N serves the flash-backed long history (survives reboots);
         # no parameter keeps the live 3-hour RAM buffer, which is finer
@@ -213,7 +348,9 @@ def _handle(cl):
         else:
             _send_history(cl)
     elif path == "/api/events" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(state.get_events()))
+        # 60 events x ~100 bytes = ~6KB, the same size that broke the pin
+        # map. Streamed for the same reason.
+        _send_json(cl, state.get_events())
     elif path == "/api/valve" and method == "POST":
         action = params.get("state", "")
         valve_name = params.get("valve", _default_valve_name)
@@ -252,18 +389,18 @@ def _handle(cl):
         ok = _trigger_valves_cb(valve_names, duration, "manual_web_zone") if valve_names else False
         _send(cl, 200, "application/json", json.dumps({"ok": bool(ok), "valves": valve_names}))
     elif path == "/api/settings" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(settings_store.get()))
+        _send_json(cl, settings_store.get())
     elif path == "/api/settings" and method == "POST":
         _apply_settings_patch(params, body)
-        _send(cl, 200, "application/json", json.dumps(settings_store.get()))
+        _send_json(cl, settings_store.get())
     elif path == "/api/schedules" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(settings_store.get().get("schedules", [])))
+        _send_json(cl, settings_store.get().get("schedules", []))
     elif path == "/api/schedules" and method == "POST":
         # Body is the full replacement list of schedules as JSON.
         _apply_schedules(body)
-        _send(cl, 200, "application/json", json.dumps(settings_store.get().get("schedules", [])))
+        _send_json(cl, settings_store.get().get("schedules", []))
     elif path == "/api/pinmap" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(_pinmap_payload()))
+        _send_pinmap(cl)
     elif path == "/api/i2c/scan" and method == "GET":
         # Live I2C bus scan - returns the address of every device that
         # answers. ADS1115 boards show up as 0x48-0x4B depending on how
@@ -280,7 +417,7 @@ def _handle(cl):
             "busy": state.scan_busy or state.scan_requested,
         }))
     elif path == "/api/valves" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(settings_store.get()["hardware"].get("valves", [])))
+        _send_json(cl, settings_store.get()["hardware"].get("valves", []))
     elif path == "/api/valves" and method == "POST":
         _apply_valves_patch(body)
         _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
@@ -289,14 +426,14 @@ def _handle(cl):
         time.sleep(1)
         machine.reset()
     elif path == "/api/zones" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(_zones_payload()))
+        _send_json(cl, _zones_payload())
     elif path == "/api/zones" and method == "POST":
         # Body is the full replacement zone list. Zones are live config
         # (read fresh every moisture check) - no reboot needed.
         _apply_zones_patch(body)
-        _send(cl, 200, "application/json", json.dumps(_zones_payload()))
+        _send_json(cl, _zones_payload())
     elif path == "/api/hardware" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps(settings_store.get()["hardware"]))
+        _send_json(cl, settings_store.get()["hardware"])
     elif path == "/api/hardware" and method == "POST":
         _apply_hardware_patch(params, body)
         _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
@@ -308,8 +445,8 @@ def _handle(cl):
         # Full device configuration (everything except WiFi creds, which
         # live in config.py) as a downloadable file - for backups and for
         # cloning a working setup onto a new kit.
-        payload = json.dumps({"planter_config": 1, "settings": settings_store.get()})
-        _send_download(cl, payload, "planter-config.json")
+        _send_json(cl, {"planter_config": 1, "settings": settings_store.get()},
+                   filename="planter-config.json")
     elif path == "/api/config/import" and method == "POST":
         if _apply_config_import(body):
             _send(cl, 200, "application/json", json.dumps({"ok": True, "rebooting": True}))
@@ -379,11 +516,11 @@ def _handle(cl):
             _send(cl, 200, "application/json",
                   json.dumps({"ok": True, "queued": True, "seconds": 10}))
     elif path == "/api/calibrate" and method == "GET":
-        _send(cl, 200, "application/json", json.dumps({
+        _send_json(cl, {
             "busy": state.calibration_busy or bool(state.calibration_requested),
             "result": state.calibration_result,
             "calibration": settings_store.get()["hardware"].get("zone_calibration", {}),
-        }))
+        })
     elif path in ("/api/update/check", "/api/update/apply") and method == "POST":
         # NEVER do the network work here. A TLS handshake on MicroPython
         # can block indefinitely - wrap_socket() performs the handshake
@@ -423,7 +560,7 @@ def _handle(cl):
         # Unknown non-API path: send the browser to the dashboard. This is
         # also what makes a phone's captive-portal probe pop the dashboard
         # open when it joins the rescue hotspot.
-        cl.send(b"HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        _send_all(cl, b"HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 
 
 _MAX_HEADER_BYTES = 4096  # headers are small; bail out rather than loop forever on garbage
@@ -827,12 +964,8 @@ _STRAPPING = [0, 2, 12, 15]
 _NOT_BROKEN_OUT = [20, 24, 28, 29, 30, 31, 37, 38]
 
 
-def _pinmap_payload():
-    """Return the role/status of every GPIO 0-39 so the UI can draw a full
-    reference table. Moisture sensors are NOT here - they live on ADS1115
-    channels, reported separately under 'ads_channels'."""
-    hw = settings_store.get()["hardware"]
-
+def _pinmap_roles(hw):
+    """GPIO -> human label, shared by the streaming and dict forms."""
     roles = {}
     roles[hw["i2c_scl_pin"]] = "I2C SCL (ADS1115)"
     roles[hw["i2c_sda_pin"]] = "I2C SDA (ADS1115)"
@@ -847,6 +980,16 @@ def _pinmap_payload():
     _led = getattr(config, "STATUS_LED_PIN", None)
     if _led is not None:
         roles.setdefault(_led, "Status LED (onboard D2)")
+    return roles
+
+
+def _pinmap_payload():
+    """Return the role/status of every GPIO 0-39 so the UI can draw a full
+    reference table. Moisture sensors are NOT here - they live on ADS1115
+    channels, reported separately under 'ads_channels'."""
+    hw = settings_store.get()["hardware"]
+
+    roles = _pinmap_roles(hw)
 
     pins = []
     for p in _ALL_GPIO:
@@ -1361,89 +1504,372 @@ def _send_long_history(cl, hours):
     hdr += "Content-Type: application/json" + CRLF
     hdr += "Content-Length: {}".format(total) + CRLF
     hdr += "Connection: close" + CRLF + CRLF
-    cl.send(hdr.encode())
-    cl.send(b"[")
+    _send_all(cl, hdr.encode())
+    _send_all(cl, b"[")
     i = 0
     for pt in _points():
         if i:
-            cl.send(b",")
-        cl.send(json.dumps(pt).encode())
+            _send_all(cl, b",")
+        _send_all(cl, json.dumps(pt).encode())
         i += 1
         if i % 20 == 0:
             _feed()
-    cl.send(b"]")
-
-
-def _send_history(cl):
-    """Serialize the history point-by-point instead of one json.dumps of
-    the whole list - that single string was the largest allocation in the
-    firmware and reliably fails on a fragmented heap after hours of
-    uptime, taking the WiFi stack down with it."""
-    parts = []
-    total = 2  # the surrounding [ ]
-    for pt in state.get_moisture_history():
-        s = json.dumps(pt)
-        if parts:
-            total += 1  # comma
-        parts.append(s)
-        total += len(s)
-    header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n".format(total)
-    cl.send(header.encode())
-    cl.send(b"[")
-    for i, s in enumerate(parts):
-        _feed()
-        if i:
-            cl.send(b",")
-        cl.send(s.encode())
-    cl.send(b"]")
+    _send_all(cl, b"]")
 
 
 def _send(cl, status, content_type, body):
+    """One-shot response for small fixed payloads (errors, {"ok": true}).
+    Anything that grows with the user's config goes through _send_json,
+    which streams instead."""
     if isinstance(body, str):
         body = body.encode()
-    header = "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n".format(
-        status, content_type, len(body)
-    )
-    cl.send(header.encode())
-    cl.send(body)
+    header = "HTTP/1.1 {} OK".format(status) + CRLF
+    header += "Content-Type: {}".format(content_type) + CRLF
+    header += "Content-Length: {}".format(len(body)) + CRLF
+    header += "Connection: close" + CRLF + CRLF
+    _send_all(cl, header.encode())
+    _send_all(cl, body)
 
 
-def _send_download(cl, body, filename):
-    """Like _send but with a Content-Disposition header so the browser
-    saves the response as a file instead of displaying it."""
-    if isinstance(body, str):
-        body = body.encode()
-    header = (
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-        "Content-Disposition: attachment; filename=\"{}\"\r\n"
-        "Content-Length: {}\r\nConnection: close\r\n\r\n"
-    ).format(filename, len(body))
-    cl.send(header.encode())
-    cl.send(body)
+_MAX_STREAM_DEPTH = 6
 
 
-_SEND_FILE_CHUNK = 1024
+def _json_fragments(obj, depth=0):
+    """Yield an object's JSON encoding one small piece at a time.
 
+    Walks lists and dicts rather than handing the whole structure to
+    json.dumps(), so no single string is ever larger than one leaf value.
+    Below _MAX_STREAM_DEPTH it falls back to json.dumps for the remainder -
+    nothing in this firmware nests that deep, and the cap means a
+    surprising structure costs one allocation rather than unbounded
+    recursion on a device with a small C stack.
 
-def _send_file(cl, path, content_type):
-    """Stream a file straight from flash in small chunks instead of
-    loading it into one big string first - see the note at the top of this
-    file for why (a single large contiguous allocation reliably fails on a
-    fragmented ESP32 heap)."""
-    try:
-        size = os.stat(path)[6]
-    except OSError:
-        _send(cl, 404, "text/plain", "not found")
+    Output is compact (no spaces), matching MicroPython's json.dumps."""
+    if depth >= _MAX_STREAM_DEPTH or not isinstance(obj, (dict, list, tuple)):
+        yield json.dumps(obj)
         return
-    header = "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n".format(
-        content_type, size
-    )
-    cl.send(header.encode())
+    if isinstance(obj, dict):
+        yield "{"
+        first = True
+        for k, v in obj.items():
+            if not first:
+                yield ","
+            first = False
+            yield json.dumps(k if isinstance(k, str) else str(k))
+            yield ":"
+            for frag in _json_fragments(v, depth + 1):
+                yield frag
+        yield "}"
+    else:
+        yield "["
+        first = True
+        for v in obj:
+            if not first:
+                yield ","
+            first = False
+            for frag in _json_fragments(v, depth + 1):
+                yield frag
+        yield "]"
+
+
+# Coalesce fragments up to this much before writing. Must not exceed
+# _SEND_CHUNK, or _send_all splits the block and the first piece is the
+# oversized write that stalls (see _SEND_CHUNK).
+_JSON_FLUSH_BYTES = 512
+
+
+def _send_fragments(cl, frags):
+    """Write small JSON fragments to the socket in coalesced blocks.
+
+    Two constraints pull against each other here.
+
+    Allocation: no single buffer may be large, or MicroPython grows its GC
+    heap out of the ESP-IDF C heap and lwIP can no longer allocate a TCP
+    segment (see _send_json).
+
+    Throughput: but one send() per fragment is ~45 tiny writes for the pin
+    map, and Nagle plus the receiver's delayed ACK turns most of them into
+    a ~30ms stall. Measured on the board: 6KB took 1.33s that way, and
+    /api/status - polled every 5 seconds - went from 128ms to 1.13s. That
+    is a real regression, not a rounding error.
+
+    Coalescing into 1KB blocks fixes the throughput without reintroducing
+    the large allocation."""
+    buf = []
+    n = 0
+    for frag in frags:
+        b = frag.encode()
+        buf.append(b)
+        n += len(b)
+        if n >= _JSON_FLUSH_BYTES:
+            _send_all(cl, b"".join(buf))
+            buf = []
+            n = 0
+            _feed()
+    if buf:
+        _send_all(cl, b"".join(buf))
+
+
+def _send_json(cl, obj, filename=None):
+    """Stream a JSON response without ever building it as one string.
+
+    THIS IS THE TWO-HEAP TRAP. A single json.dumps() of a whole payload is
+    the largest allocation this firmware makes, and on a fragmented heap it
+    does not merely fail - it forces MicroPython to grow its GC heap OUT OF
+    the ESP-IDF C heap that lwIP allocates TCP buffers from, and it never
+    gives that memory back. So the NETWORK dies, not just the request.
+    Measured mid-request on a real board: the C heap fell to 824 bytes free
+    with a largest block of 304 while gc.mem_free() still reported 54KB.
+    socket.send() then blocked forever on the 92-byte response HEADER -
+    there was no segment to be had - which is why the symptom looked like
+    "some dashboard cards load and others hang".
+
+    The payloads that reach this size are the ones that grow with the
+    user's setup: the pin map, the event log, and - on a fully populated
+    kit - settings, schedules and the config export. A dev board with two
+    zones never hits it, which is exactly why it shipped.
+
+    Two passes: measure for an exact Content-Length, then send. Everything
+    is measured in BYTES, because json.dumps() emits non-ASCII raw rather
+    than escaping it - len() on the string under-counts, and a short
+    Content-Length truncates the body, which the browser waits on forever.
+
+    Pass `filename` to send it as a download instead of a page."""
+    total = 0
+    for frag in _json_fragments(obj):
+        total += len(frag.encode())
+
+    header = "HTTP/1.1 200 OK" + CRLF + "Content-Type: application/json" + CRLF
+    if filename:
+        header += 'Content-Disposition: attachment; filename="{}"'.format(filename) + CRLF
+    header += "Content-Length: {}".format(total) + CRLF
+    header += "Connection: close" + CRLF + CRLF
+    _send_all(cl, header.encode())
+    _send_fragments(cl, _json_fragments(obj))
+
+
+def _send_history(cl):
+    _send_json(cl, state.get_moisture_history())
+
+
+def _send_pinmap(cl):
+    """Stream the GPIO pin map instead of building it as one JSON string.
+
+    THIS IS THE TWO-HEAP TRAP, and it is why the GPIO card was the one that
+    never loaded. The payload is ~6KB; json.dumps() produced a 6KB string
+    and .encode() a second 6KB copy. Allocations that size make MicroPython
+    grow its GC heap OUT OF the ESP-IDF C heap - and it never gives that
+    memory back. Measured mid-request: IDF free fell to 824 bytes with a
+    largest block of 304, while gc.mem_free() still reported 54KB and
+    everything looked fine.
+
+    lwIP allocates its TCP send buffers from that same C heap. With 304
+    bytes available it cannot get a segment, so socket.send() blocks
+    forever - not on the 6KB body, but on the 92-byte HEADER, which is what
+    made the symptom so confusing. Small endpoints stayed under the
+    threshold and worked, so the dashboard half-loaded.
+
+    Streaming keeps every allocation to one small piece at a time. Two
+    passes: measure for an exact Content-Length, then send."""
+    settings = settings_store.get()
+    hw = settings["hardware"]
+
+    roles = _pinmap_roles(hw)
+    ads_count = 4 * len(hw.get("ads1115_addresses", [0]))
+    zone_channels = hw.get("zone_channels", {})
+    channel_roles = {}
+    for name, ch in zone_channels.items():
+        channel_roles[ch] = name
+
+    def pieces():
+        """Yield the response one small fragment at a time."""
+        yield '{"pins":['
+        first = True
+        for gp in _ALL_GPIO:
+            frag = json.dumps({
+                "gpio": gp,
+                "role": roles.get(gp),
+                "input_only": gp in _INPUT_ONLY,
+                "flash": gp in _FLASH,
+                "serial": gp in _SERIAL,
+                "strapping": gp in _STRAPPING,
+                "not_broken_out": gp in _NOT_BROKEN_OUT,
+            })
+            yield (frag if first else "," + frag)
+            first = False
+        yield '],"ads_channels":['
+        first = True
+        for ch in range(ads_count):
+            frag = json.dumps({"channel": ch, "zone": channel_roles.get(ch)})
+            yield (frag if first else "," + frag)
+            first = False
+        # The dashboard reads hardware for board addresses and valve config.
+        # It is ~1.5KB - comfortably under the size that forces the GC heap
+        # to grow - so one fragment is fine here.
+        yield '],"hardware":'
+        # hardware grows with the kit (4 ADS boards, 8 valves, per-zone
+        # calibration): 1.8KB on a full setup, so it gets walked too
+        # rather than dumped in one piece.
+        for frag in _json_fragments(hw):
+            yield frag
+        yield "}"
+
+    # Measure in BYTES, not characters. json.dumps() emits non-ASCII raw
+    # rather than escaping it, so a zone named "Jardin" with an accent is
+    # longer encoded than len() reports - and a short Content-Length
+    # truncates the body, which the browser then waits on forever.
+    total = 0
+    for frag in pieces():
+        total += len(frag.encode())
+
+    hdr = "HTTP/1.1 200 OK" + CRLF
+    hdr += "Content-Type: application/json" + CRLF
+    hdr += "Content-Length: {}".format(total) + CRLF
+    hdr += "Connection: close" + CRLF + CRLF
+    _send_all(cl, hdr.encode())
+    _send_fragments(cl, pieces())
+
+
+# A response must never hold the loop longer than this, no matter what the
+# client does.
+_SEND_DEADLINE_MS = 4000
+
+# EAGAIN / EWOULDBLOCK from a non-blocking send - "no buffer space right
+# now", not an error.
+_EAGAIN = (11, 35)
+
+
+def _send_all(cl, data):
+    """Write every byte, or give up on a deadline.
+
+    settimeout() DOES NOT BOUND send() on this port. Measured: a single
+    1024-byte send blocked for 30 seconds on a socket with a 3-second
+    timeout. Because the server is single-threaded and polled from the main
+    loop, that one stuck client froze the whole dashboard - and the valve
+    safety cutoff runs in that same loop. One client going away mid-response
+    was enough to make the device look dead to everyone else.
+
+    So the socket is switched to non-blocking and the waiting is done here,
+    against an explicit deadline: EAGAIN means "lwIP has no buffer yet",
+    which is normal back-pressure and worth a short wait; passing the
+    deadline means the peer is gone or wedged and the connection is
+    abandoned so the loop can get on with its work. The watchdog is fed
+    while waiting, and abandoning raises, which makes poll_once close the
+    socket in its finally.
+
+    Partial writes are the norm here - send() returns what it accepted, and
+    ignoring that return was itself an old bug in this file (it silently
+    truncated responses)."""
+    if isinstance(data, str):
+        data = data.encode()
+    try:
+        cl.setblocking(False)
+    except (OSError, AttributeError):
+        pass
+    total = len(data)
+    sent = 0
+    _dbg = getattr(config, "WEB_SEND_DEBUG", False)
+    start = time.ticks_ms()
+    # Belt and braces alongside the deadline: a deadline is only as good as
+    # the clock behind it, and this loop must NEVER become unbounded - it
+    # runs inside the main loop that also enforces the valve cutoff. Each
+    # spin costs ~2ms, so this caps a stalled send at a few seconds even if
+    # ticks_ms misbehaves.
+    spins = 0
+    while sent < total:
+        spins += 1
+        if spins > 4000:
+            raise OSError("send made no progress: {} of {} bytes".format(sent, total))
+        chunk = data[sent:sent + _SEND_CHUNK]
+        if _dbg:
+            print("  send: attempting", len(chunk), "of", total - sent, "left")
+        try:
+            n = cl.send(chunk)
+        except OSError as e:
+            err = e.args[0] if e.args else None
+            if err in _EAGAIN:
+                if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
+                    raise OSError("send deadline exceeded after {} of {} bytes".format(
+                        sent, total))
+                _feed()
+                time.sleep_ms(2)
+                continue
+            raise
+        if _dbg:
+            print("  send: returned", n)
+        if n is None:
+            # non-blocking socket with nothing accepted this time
+            if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
+                raise OSError("send deadline exceeded after {} of {} bytes".format(
+                    sent, total))
+            _feed()
+            time.sleep_ms(2)
+            continue
+        if n < 0:
+            raise OSError("socket send returned {}".format(n))
+        if n == 0:
+            if time.ticks_diff(time.ticks_ms(), start) > _SEND_DEADLINE_MS:
+                raise OSError("send stalled at {} of {} bytes".format(sent, total))
+            _feed()
+            time.sleep_ms(2)
+            continue
+        sent += n
+        if sent < total:
+            _feed()
+    return sent
+
+
+_SEND_FILE_CHUNK = 512   # same ceiling as _SEND_CHUNK - see the note there
+
+
+def _send_file(cl, path, content_type, gzip_ok=False):
+    """Stream a file straight from flash in small chunks instead of loading
+    it into one big string first - see the note at the top of this file for
+    why (a single large contiguous allocation reliably fails on a
+    fragmented ESP32 heap).
+
+    Prefers a pre-compressed `<path>.gz` twin when the client accepts gzip.
+    THIS IS NOT AN OPTIMISATION, it is a fix. index.html is ~101KB and the
+    whole ESP-IDF C heap is ~33KB. Pushing the uncompressed file at ~70KB/s
+    filled lwIP's retransmit and TIME_WAIT queues with more pbufs than the
+    heap could hold: measured straight after one page load, the C heap sat
+    at 1328 bytes free / 960 largest, and EVERY other request - the 5s
+    dashboard poll included - then blocked for ~31s until those buffers
+    drained. That is the "web UI goes down periodically" symptom, and it
+    was self-inflicted by the page load itself.
+
+    Compressed the same file is ~20KB, which stays comfortably inside the
+    available buffer space, so the queues never get deep enough to starve
+    the heap. It also loads five times faster."""
+    if gzip_ok:
+        try:
+            size = os.stat(path + ".gz")[6]
+            path = path + ".gz"
+            content_encoding = "gzip"
+        except OSError:
+            content_encoding = None
+    else:
+        content_encoding = None
+
+    if content_encoding is None:
+        try:
+            size = os.stat(path)[6]
+        except OSError:
+            _send(cl, 404, "text/plain", "not found")
+            return
+
+    header = "HTTP/1.1 200 OK" + CRLF
+    header += "Content-Type: {}".format(content_type) + CRLF
+    if content_encoding:
+        header += "Content-Encoding: gzip" + CRLF
+    header += "Content-Length: {}".format(size) + CRLF
+    header += "Connection: close" + CRLF + CRLF
+    _send_all(cl, header.encode())
     with open(path, "rb") as f:
         while True:
             _feed()
             chunk = f.read(_SEND_FILE_CHUNK)
             if not chunk:
                 break
-            cl.send(chunk)
+            _send_all(cl, chunk)
 

@@ -14,6 +14,8 @@ Everything beyond the quick start on the [main page](../README.md).
 | **[API reference](api.md)** | Every HTTP endpoint with parameters |
 | **[Development](development.md)** | Architecture, the two-heap memory problem, coding constraints, testing |
 | **[Troubleshooting](troubleshooting.md)** | Symptoms, causes, fixes |
+| **[Listener stall handoff](listener-stall-handoff.md)** | Self-contained brief on the web-server stall: what it is, what has been ruled out, and why it is not this firmware |
+| **[asyncio server port](asyncio-server.md)** | The one open reliability bug: concurrent connections hang the main loop, and the plan to fix it |
 
 ## Quick answers
 
@@ -32,3 +34,9 @@ cooldowns, plus any schedules. See [watering](watering.md).
 **Board reboots every 2 minutes at the REPL.** The watchdog. Set
 `WATCHDOG_TIMEOUT_SEC = 0` while developing. See
 [troubleshooting](troubleshooting.md#board-boot-loops).
+
+**The dashboard dies when two people open it.** Known bug: concurrent
+connections hang the main loop until the watchdog reboots (~2 min,
+unattended, valves closed). Diagnosis and fix plan in
+[asyncio server port](asyncio-server.md); reproduce with
+`python tools/stress_web.py <ip> 6`.
