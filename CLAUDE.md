@@ -471,39 +471,25 @@ block and checked with `node --check`.
   threshold is deliberately far below normal operation - an earlier value
   of 8192 sat exactly at one board's degraded steady state and refused
   nearly everything, doing more harm than the condition it guarded.
-- **OPEN BUG: the web listener wedges and NOTHING detects it.** The device
-  stops serving while everything else stays healthy - loop cycling,
-  watchdog fed, 8MB free, answering pings. Measured in that state: port 80
-  gave REFUSED eight times running on one occasion, TIMEOUT on another.
-  Two blind spots, both still present: `poll_once` treats every `accept()`
-  error as "nothing waiting", and the health check asks whether the socket
-  OBJECT exists, which stays true - so main.py's 30s retry never fires.
-  A fix was written and REVERTED: it made a device that was stable under a
-  light load (29/29 requests, no reboots) unstable (2 watchdog reboots).
-  See docs/CHANGELOG.md 2026-09-06 and the `wip/asyncio-server` branch.
-  **Rebuilding the listening socket does not restore service** (measured) -
-  lwIP itself wedges and only a reboot clears it. Note also that any probe
-  added to the main loop must not block: `settimeout()` does not bound
-  socket calls on this port.
-- **OPEN BUG: concurrent connections hang the main loop.** Under parallel
-  requests the loop blocks long enough for the watchdog to reboot
-  (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware, and
-  the evidence rules out our own logic:
-    * NOT memory - reproduced on an ESP32-S3 with **8MB of C heap free**.
-    * NOT a specific call - two traced hangs stopped at *different* points
-      (once after `close()` returned, once between two successful sends).
-    * NOT abandoned clients - it still reboots 4x in 6 minutes when every
-      client reads its full response.
-    * Both CPUs report IDLE in the watchdog dump, so the MicroPython task
-      is parked in a syscall, not spinning in Python.
-    * Strictly sequential requests never trigger it: 220 in a row, flat.
-  The common factor is **blocking sockets with concurrent connections**.
-  `settimeout()` is already proven not to bound `send()` on this port, and
-  `_read_headers` still relies on it. Safe but disruptive: valves close on
-  boot and it recovers unattended in ~2 minutes.
-  **The fix is to stop using blocking sockets** - a fully non-blocking,
-  poll-driven server. `asyncio` (with `start_server`) is available and is
-  the well-trodden path on this port; see the asyncio note below.
+- **KNOWN, NOT OURS: the listener stalls under page-load traffic.** The
+  device stops accepting for tens of seconds while staying healthy (loop
+  cycling, watchdog fed, 8MB free, answering pings), then recovers by
+  itself. **Do not try to fix this in web.py or main.py.** It has been
+  isolated: `tools/minimal_server_repro.py` is a ~40 line server with none
+  of this firmware in it - no watchdog, I2C, LED, flash writes, streaming
+  or keep-alive - and it reproduces the stall exactly. The fault is in
+  MicroPython/lwIP on this platform.
+  Already tried and measured as no help: an asyncio server (task per
+  connection), the ESP32-S3 with 260x the C heap, keep-alive (26 requests
+  per socket instead of 11 sockets per page), and rebuilding the listening
+  socket. Also ruled out: memory, gc.collect(), the filesystem, I2C
+  timeouts and the status LED.
+  Two blind spots in `poll_once` DO remain real and are worth fixing if
+  anyone touches it: every `accept()` error is treated as "nothing
+  waiting", and the health check asks whether the socket OBJECT exists,
+  which stays true - so main.py's 30s retry never fires. A fix for those
+  was written and reverted because it regressed a stable device; see the
+  `wip/asyncio-server` branch and docs/CHANGELOG.md 2026-09-06.
 - **Every length that comes off the network is bounded.** `Content-Length`
   is client-supplied: request bodies cap at `_MAX_BODY_BYTES` (16KB),
   uploads at `_MAX_UPLOAD_BYTES` (512KB) with a `_UPLOAD_DEADLINE_SEC`

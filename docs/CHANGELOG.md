@@ -197,37 +197,45 @@ disabled, so it is not the escalation itself.
 The work is preserved on the `wip/asyncio-server` branch alongside the
 asyncio port, both clearly marked as not working.
 
-### Known: concurrent connections hang the main loop (blocking sockets)
-Under parallel requests the loop blocks long enough for the watchdog to
-reboot (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware
-until it reproduced, and the evidence rules out the firmware's own logic:
+### Known: the listener stalls, and it is NOT this firmware
+Under page-load-shaped traffic the device stops accepting connections for
+tens of seconds while staying otherwise healthy - main loop cycling,
+watchdog fed, 8MB of heap free, answering pings - then recovers on its own.
+Probing port 80 during a stall gives REFUSED or TIMEOUT depending on the
+moment.
 
-- **Not memory.** Reproduced on an ESP32-S3 with **8MB of C heap free**.
-- **Not one bad call.** Two traced hangs stopped at *different* points:
-  once immediately after `close()` returned, once between two successful
-  sends mid-response.
-- **Not abandoned clients.** Adding a client that hangs up mid-response
-  seemed a likely trigger; removing it changed nothing - still 4 watchdog
-  reboots in 6 minutes with every client reading its full response.
-- **Both CPUs report IDLE** in the watchdog dump, so the MicroPython task
-  is parked in a syscall rather than spinning in Python.
-- **Sequential requests never trigger it** - 220 in a row with a flat heap.
+**This was chased through the entire firmware before being isolated.** For
+the record, all measured on hardware, none of it helped:
 
-The common factor is blocking sockets plus concurrent connections.
-`settimeout()` is already proven not to bound `send()` on this port
-(measured: a 30-second block on a 3-second timeout), and `_read_headers`
-still depends on it.
+| changed | result |
+|---|---|
+| blocking inline server -> asyncio, one task per connection | still stalls |
+| ESP32 (33KB C heap) -> ESP32-S3 (8MB, 260x) | still stalls |
+| 11 sockets per page -> keep-alive, 26 requests per socket | still stalls |
+| rebuilding the listening socket when it fails | does not restore service |
 
-Impact is bounded: the watchdog reboots the board, valves close on boot,
-and it recovers unattended in ~2 minutes - but the dashboard is gone
-meanwhile, and a browser opening several connections per page load is
-enough to provoke it.
+Also ruled out by measurement: memory (8MB free at the moment of failure),
+`gc.collect()` (0-20ms), the filesystem (2% used), I2C timeouts (100 failed
+reads moved the C heap *up*), and the WS2812 LED (300 writes, no change).
 
-The fix is to stop using blocking sockets: a fully non-blocking,
-poll-driven server. `asyncio` is available on this firmware
-(`asyncio.start_server` verified present) and the long-standing
-"no asyncio" rule in CLAUDE.md has been superseded for the ESP32-S3 build
-on the strength of this measurement.
+**`tools/minimal_server_repro.py` settles it.** A ~40 line HTTP server with
+none of the planter code - no watchdog, no I2C, no LED, no flash writes, no
+settings, no gzip, no streaming, no keep-alive - reproduces the stall
+exactly: 332 served / 352 failed over 7 minutes, and after the load stopped
+it timed out four times then answered in 0.02s.
+
+So the fault is in MicroPython/lwIP on this platform, not in this project.
+Rewriting `web.py` or `main.py` will not fix it - two full server
+architectures have already been tried.
+
+What this means in practice: normal single-tab use is fine, and a stall
+clears itself in tens of seconds. Two tabs, or repeated fast refreshes,
+can provoke it. The watchdog and the nightly reboot both remain as
+backstops, and valves close on boot, so watering is never at risk.
+
+Next step is to reproduce it on a stock MicroPython build with no
+application code at all and raise it upstream, rather than continuing to
+move it around inside this repo.
 
 ### Hardware note: a faulty ADS1115 can take the whole board down
 A module in this state was diagnosed live. Both I2C lines pinned low 100%
