@@ -146,6 +146,50 @@ Recorded so nobody spends hours on them again:
   rebuilds the listener, and the C heap sits at exactly 9668 before and
   after. Removed; do not re-add without new evidence.
 
+### Fixed: a wedged web listener now recovers itself
+The device would stop serving while otherwise perfectly healthy - main loop
+cycling, watchdog fed, 8MB of heap free, answering pings. Probing port 80
+in that state gave **REFUSED** eight times in a row on one occasion and
+**TIMEOUT** on another. Either way the dashboard was gone until something
+rebooted the board, and nothing ever did.
+
+Two blind spots hid it, both in `poll_once`:
+
+- `except OSError: return` treated **every** `accept()` failure as "nothing
+  waiting", so a broken listening socket looked exactly like an idle one.
+- `main.py` asked `web._server_sock is None` before retrying, which stays
+  False because the socket object outlives its usefulness - so the existing
+  30-second retry never ran.
+
+`EAGAIN` is now told apart from a real error, a real error rebuilds the
+listener, and `server_running()` reports whether the device can actually
+serve. `/api/status` gained `conns_accepted` and `listener_restarts`.
+
+**That was not enough, and the measurement is the point:** rebuilding the
+listening socket does *not* restore service. lwIP itself is wedged, not
+just our socket, and only a reboot brings it back.
+
+Acting on that required telling "nobody is asking" from "everyone is
+failing" - identical from inside, so neither a rebuild nor a reboot could
+be triggered safely (an idle planter would have rebooted itself every few
+minutes). `web.listener_alive()` settles it by connecting to the device's
+own IP on port 80. That works even though the server is single-threaded,
+because lwIP completes the handshake itself - the probe succeeds without
+`poll_once` ever accepting it. Measured on hardware: it answers in 2ms.
+
+The probe runs only after 90s with no connections, so a dashboard in use
+never triggers it. First failure rebuilds the listener; a second escalates
+to a controlled reboot, gated on WiFi being up with no valve open and no
+update or calibration running, so it can never interrupt watering. Valves
+close on boot, so an open-ended outage becomes about 15 seconds.
+
+Realistic use (one tab, 5s poll, refresh every 2 min, 9 minutes): 162
+requests served, one wedge detected and recovered at 272s, then 250s
+clean. Under `tools/stress_web.py`, which drives roughly 400x a real
+dashboard's request rate, it is better but still fails - throughput went
+285 -> 534 and outages 280s -> 110s. That test provokes the fault
+deliberately and is not the bar for normal use.
+
 ### Known: concurrent connections hang the main loop (blocking sockets)
 Under parallel requests the loop blocks long enough for the watchdog to
 reboot (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware
