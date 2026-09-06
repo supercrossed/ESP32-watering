@@ -471,19 +471,20 @@ block and checked with `node --check`.
   threshold is deliberately far below normal operation - an earlier value
   of 8192 sat exactly at one board's degraded steady state and refused
   nearly everything, doing more harm than the condition it guarded.
-- **The web listener can wedge, and the firmware now detects it.** It used
-  to stop serving while everything else stayed healthy, with nothing
-  noticing: `poll_once` treated every `accept()` error as "nothing
-  waiting", and the health check asked whether the socket OBJECT existed,
-  which stays true. Both are fixed, and `/api/status` reports
-  `conns_accepted` / `listener_restarts`.
-  **Rebuilding the socket does not fix it** (measured) - lwIP itself
-  wedges, and only a reboot restores service. So `web.listener_alive()`
-  connects to the device's own IP:80 to tell a wedged server from an idle
-  one; lwIP completes the handshake itself, so this works even though the
-  server is single-threaded and never accepts the probe. After 90s with no
-  connections it probes, rebuilds on the first failure, and reboots on the
-  second - gated so it can never interrupt watering.
+- **OPEN BUG: the web listener wedges and NOTHING detects it.** The device
+  stops serving while everything else stays healthy - loop cycling,
+  watchdog fed, 8MB free, answering pings. Measured in that state: port 80
+  gave REFUSED eight times running on one occasion, TIMEOUT on another.
+  Two blind spots, both still present: `poll_once` treats every `accept()`
+  error as "nothing waiting", and the health check asks whether the socket
+  OBJECT exists, which stays true - so main.py's 30s retry never fires.
+  A fix was written and REVERTED: it made a device that was stable under a
+  light load (29/29 requests, no reboots) unstable (2 watchdog reboots).
+  See docs/CHANGELOG.md 2026-09-06 and the `wip/asyncio-server` branch.
+  **Rebuilding the listening socket does not restore service** (measured) -
+  lwIP itself wedges and only a reboot clears it. Note also that any probe
+  added to the main loop must not block: `settimeout()` does not bound
+  socket calls on this port.
 - **OPEN BUG: concurrent connections hang the main loop.** Under parallel
   requests the loop blocks long enough for the watchdog to reboot
   (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware, and

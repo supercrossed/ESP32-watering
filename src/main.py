@@ -978,14 +978,6 @@ def run_update_check(install=False):
         state.update_in_progress = False
         gc.collect()
 
-# Only self-test the web server when nothing has connected for this long.
-# A dashboard in use connects every 5s, so it never triggers.
-_WEB_SELFTEST_AFTER_SEC = 90
-# Consecutive failed self-tests before rebooting. The first failure only
-# rebuilds the listener; this is the escalation when that does not work.
-_WEB_DEAD_REBOOT_STREAK = 2
-web_dead_streak = 0
-
 state.log_event("ready", "entering main loop")
 
 while True:
@@ -1065,47 +1057,10 @@ while True:
         last_wifi_check = now
         # if the web server failed to start (or died), try to bring it back
         try:
-            if not web.server_running() and web.start_server():
+            if web._server_sock is None and web.start_server():
                 state.log_event("web", "server started")
         except Exception as e:
             print("web server retry failed:", e)
-
-        # Is the dashboard actually reachable? Silence alone cannot answer
-        # that - an idle planter and a wedged one look identical from in
-        # here - so ask the network stack directly by connecting to our own
-        # port 80. Only run it when nothing has connected recently, so a
-        # dashboard in use never pays for it.
-        try:
-            if wifi_was_up and not state.any_valve_open() \
-                    and not state.update_in_progress \
-                    and not state.calibration_busy \
-                    and web.seconds_since_accept() > _WEB_SELFTEST_AFTER_SEC:
-                if wdt:
-                    wdt.feed()
-                alive = web.listener_alive()
-                if wdt:
-                    wdt.feed()
-                if alive is False:
-                    web_dead_streak += 1
-                    print("web self-test FAILED ({} in a row)".format(web_dead_streak))
-                    if web_dead_streak == 1:
-                        state.log_event("web", "server unreachable - rebuilding listener")
-                        web.rebuild_listener("self-test failed")
-                    elif web_dead_streak >= _WEB_DEAD_REBOOT_STREAK:
-                        # Rebuilding the socket has been measured NOT to
-                        # bring service back; a reboot is the only thing
-                        # that does. Valves close on boot, so this costs
-                        # ~15s of downtime instead of an open-ended outage.
-                        state.log_event(
-                            "reboot", "web server unreachable after rebuild - rebooting")
-                        print("web unreachable after rebuild - rebooting")
-                        time.sleep(1)
-                        machine.reset()
-                elif alive is True and web_dead_streak:
-                    print("web self-test recovered")
-                    web_dead_streak = 0
-        except Exception as e:
-            print("web self-test error:", e)
         try:
             # While the rescue hotspot is up the station is deliberately
             # parked (shared radio - see wifi_setup.start_rescue_ap), and
@@ -1386,7 +1341,7 @@ while True:
     # clock, and the loop iterates every ~200ms (the select timeout), which
     # bounds how fast it can flash.
     tms = time.ticks_ms()
-    _net_ok = wifi_was_up and web.server_running()
+    _net_ok = wifi_was_up and web._server_sock is not None
 
     if status_rgb is not None:
         # Colour says what's happening - readable at a glance from across a
@@ -1400,7 +1355,7 @@ while True:
             _rgb_set((0, 0, _lvl))
         elif not wifi_was_up:
             _rgb_set((60, 20, 0) if (tms // 300) % 2 == 0 else (0, 0, 0))  # amber blink
-        elif not web.server_running():
+        elif web._server_sock is None:
             _rgb_set((60, 0, 0) if (tms // 800) % 2 == 0 else (0, 0, 0))   # red blink
         elif state.startup_grace_logged and (
                 time.time() - state.boot_time) < getattr(config, "STARTUP_GRACE_SEC", 60):

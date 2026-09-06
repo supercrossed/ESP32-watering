@@ -146,49 +146,56 @@ Recorded so nobody spends hours on them again:
   rebuilds the listener, and the C heap sits at exactly 9668 before and
   after. Removed; do not re-add without new evidence.
 
-### Fixed: a wedged web listener now recovers itself
-The device would stop serving while otherwise perfectly healthy - main loop
-cycling, watchdog fed, 8MB of heap free, answering pings. Probing port 80
-in that state gave **REFUSED** eight times in a row on one occasion and
-**TIMEOUT** on another. Either way the dashboard was gone until something
-rebooted the board, and nothing ever did.
+### Tried and REVERTED: listener self-healing
+Recorded because the measurements are worth keeping and the approach
+should not be re-attempted blind.
 
-Two blind spots hid it, both in `poll_once`:
+**The fault.** The device stops serving while otherwise perfectly healthy -
+main loop cycling, watchdog fed, 8MB of heap free, answering pings.
+Probing port 80 in that state gave **REFUSED** eight times in a row on one
+occasion and **TIMEOUT** on another. Either way the dashboard is gone until
+something reboots the board, and nothing does.
 
-- `except OSError: return` treated **every** `accept()` failure as "nothing
-  waiting", so a broken listening socket looked exactly like an idle one.
-- `main.py` asked `web._server_sock is None` before retrying, which stays
-  False because the socket object outlives its usefulness - so the existing
-  30-second retry never ran.
+**Why nothing notices.** Two blind spots in `poll_once`:
+`except OSError: return` treats *every* `accept()` failure as "nothing
+waiting", so a broken listening socket is indistinguishable from an idle
+one; and `main.py` checks `web._server_sock is None` before retrying, which
+stays False because the socket object outlives its usefulness, so the
+existing 30-second retry never fires. Both remain true today.
 
-`EAGAIN` is now told apart from a real error, a real error rebuilds the
-listener, and `server_running()` reports whether the device can actually
-serve. `/api/status` gained `conns_accepted` and `listener_restarts`.
+**What was tried:** telling `EAGAIN` apart from a real `accept()` error and
+rebuilding the listener on a real one; an honest `server_running()`;
+rebuilding after a long silence; and `listener_alive()`, which connects to
+the device's own IP:80 to distinguish a wedged server from an idle one
+(lwIP completes the handshake itself, so the probe succeeds even though the
+server is single-threaded and never accepts it - verified on hardware, it
+answers in 2ms).
 
-**That was not enough, and the measurement is the point:** rebuilding the
-listening socket does *not* restore service. lwIP itself is wedged, not
-just our socket, and only a reboot brings it back.
+**Why it was reverted.** A/B on the same hardware under a light load of one
+request every 10 seconds for 5 minutes:
 
-Acting on that required telling "nobody is asking" from "everyone is
-failing" - identical from inside, so neither a rebuild nor a reboot could
-be triggered safely (an idle planter would have rebooted itself every few
-minutes). `web.listener_alive()` settles it by connecting to the device's
-own IP on port 80. That works even though the server is single-threaded,
-because lwIP completes the handshake itself - the probe succeeds without
-`poll_once` ever accepting it. Measured on hardware: it answers in 2ms.
+| build | result |
+|---|---|
+| without these changes | **29/29 served, 0 failures, 0 reboots**, uptime climbing steadily |
+| with these changes | 16 served, 6 failures, **2 watchdog reboots** |
 
-The probe runs only after 90s with no connections, so a dashboard in use
-never triggers it. First failure rebuilds the listener; a second escalates
-to a controlled reboot, gated on WiFi being up with no valve open and no
-update or calibration running, so it can never interrupt watering. Valves
-close on boot, so an open-ended outage becomes about 15 seconds.
+The changes made a device that was stable under that load unstable. The
+cause was not identified; the reboots continued with the reboot escalation
+disabled, so it is not the escalation itself.
 
-Realistic use (one tab, 5s poll, refresh every 2 min, 9 minutes): 162
-requests served, one wedge detected and recovered at 272s, then 250s
-clean. Under `tools/stress_web.py`, which drives roughly 400x a real
-dashboard's request rate, it is better but still fails - throughput went
-285 -> 534 and outages 280s -> 110s. That test provokes the fault
-deliberately and is not the bar for normal use.
+**Two things worth carrying forward.**
+
+- **Rebuilding the listening socket does not restore service** (measured).
+  lwIP itself wedges, not just our socket, and only a reboot brings it
+  back. Any future fix has to account for that.
+- A blocking `connect()` was added inside the main loop. Socket timeouts
+  are already proven unreliable on this port (`settimeout()` does not bound
+  `send()` - measured, a 30 second block on a 3 second timeout), so a
+  blocking probe there is a plausible way to hang the loop and is the first
+  thing to rule out next time.
+
+The work is preserved on the `wip/asyncio-server` branch alongside the
+asyncio port, both clearly marked as not working.
 
 ### Known: concurrent connections hang the main loop (blocking sockets)
 Under parallel requests the loop blocks long enough for the watchdog to

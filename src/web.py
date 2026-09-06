@@ -27,21 +27,6 @@ INDEX_HTML_PATH = "index.html"
 CRLF = "\r\n"
 
 _server_sock = None
-_accepted = 0                 # connections served since boot
-_listener_restarts = 0        # times the listener had to be rebuilt
-_last_accept_ms = None        # monotonic ticks of the last accepted connection
-
-# EAGAIN / EWOULDBLOCK: "nothing pending right now", the normal idle case.
-# Anything else from accept() means the listening socket is broken.
-_EAGAIN = (11, 35)
-
-# Rebuild the listener after this long with no connection accepted at all.
-# A dashboard in use polls every 5s, so this never fires in normal service;
-# it exists because the worst observed wedge never surfaced an error to
-# react to - select() simply stopped reporting the socket readable and
-# accept() was never called. Rebuilding is cheap and drops nothing when
-# there is nothing to drop.
-_LISTENER_IDLE_REBUILD_MS = 60000        # 1 minute
 _valves = {}  # injected by main.py: dict of valve name -> Valve
 _trigger_watering_cb = None  # injected by main.py: fn(valve_name, duration_sec, reason)
 _trigger_valves_cb = None  # injected by main.py: fn(valve_names, duration_sec, reason) - sequential
@@ -111,105 +96,6 @@ def start_server():
     _server_sock = s
     print("Web server listening on port 80")
     return True
-
-
-def server_running():
-    """Whether the device can currently accept connections.
-
-    main.py calls this before retrying start_server(). It used to check
-    `_server_sock is None`, which stayed False while every connection was
-    being refused - so the retry never ran and the dashboard stayed dead
-    until a reboot."""
-    return _server_sock is not None
-
-
-def server_stats():
-    """(connections accepted, listener rebuilds) - surfaced in /api/status
-    so a recurring fault is visible rather than inferred."""
-    return _accepted, _listener_restarts
-
-
-def seconds_since_accept():
-    """How long since any client connected. Large means either nobody is
-    browsing or the listener is wedged - listener_alive() tells them
-    apart."""
-    if _last_accept_ms is None:
-        return 0
-    return time.ticks_diff(time.ticks_ms(), _last_accept_ms) // 1000
-
-
-def rebuild_listener(why):
-    """Public wrapper so main.py can force a rebuild."""
-    return _rebuild_listener(why)
-
-
-def listener_alive(timeout=2):
-    """Can this device open a TCP connection to its own web server?
-
-    True  - the listening socket is healthy.
-    False - it is not; nothing is completing handshakes.
-    None  - cannot tell (no IP yet), never act on this.
-
-    Works despite the server being single-threaded: lwIP performs the
-    handshake itself, so the connection is established without poll_once
-    ever accepting it. The probe socket is closed immediately; whatever it
-    left behind is reaped by the normal accept path.
-
-    Blocks for up to `timeout` seconds, so callers run it rarely and feed
-    the watchdog around it."""
-    try:
-        import network
-        ip = network.WLAN(network.STA_IF).ifconfig()[0]
-    except Exception:
-        return None
-    if not ip or ip == "0.0.0.0":
-        return None
-    probe = None
-    try:
-        probe = socket.socket()
-        probe.settimeout(timeout)
-        probe.connect((ip, 80))
-        return True
-    except OSError:
-        # Refused, reset or timed out - in every case nothing is serving.
-        return False
-    except Exception:
-        return None
-    finally:
-        if probe is not None:
-            try:
-                probe.close()
-            except OSError:
-                pass
-
-
-def _rebuild_listener(why, log=True):
-    """Drop the listening socket so the next start_server() recreates it.
-
-    `log=False` for the routine idle rebuild: a device nobody is browsing
-    hits that path every minute, and writing an event each time would
-    churn flash and bury the real entries. Genuine accept() failures are
-    still logged."""
-    global _server_sock, _listener_restarts, _last_accept_ms
-    _listener_restarts += 1
-    if log:
-        print("web: rebuilding listener ({})".format(why))
-        try:
-            state.log_event("web", "listener rebuilt: {}".format(why))
-        except Exception:
-            pass
-    elif _listener_restarts % 30 == 1:
-        # occasional breadcrumb so a silent device is not a mystery
-        print("web: listener refreshed after idle ({} so far)".format(
-            _listener_restarts))
-    try:
-        if _server_sock is not None:
-            _server_sock.close()
-    except OSError:
-        pass
-    _server_sock = None
-    _last_accept_ms = None
-    return start_server()
 
 
 # A LAN request completes in tens of milliseconds. Eight seconds was far
@@ -339,17 +225,8 @@ def poll_once(timeout=0.2):
     behind it never caught up - the backlog grew, the page half-loaded, and
     more tabs made it worse. Draining lets a burst clear in one pass, while
     the budget keeps valve timing and the watchdog serviced."""
-    global _idle_ms, _accepted, _last_accept_ms
+    global _idle_ms
     if _server_sock is None:
-        return
-    # Nothing has connected for a long time. On a device in use that is
-    # impossible (the dashboard polls every 5s), so treat it as a wedged
-    # listener and rebuild - this is the only handle we have on the failure
-    # mode where accept() is never called at all.
-    if _last_accept_ms is None:
-        _last_accept_ms = time.ticks_ms()
-    elif time.ticks_diff(time.ticks_ms(), _last_accept_ms) > _LISTENER_IDLE_REBUILD_MS:
-        _rebuild_listener("idle", log=False)
         return
     t0 = time.ticks_ms()
     try:
@@ -365,17 +242,8 @@ def poll_once(timeout=0.2):
     for _ in range(_MAX_CONNS_PER_POLL):
         try:
             cl, addr = _server_sock.accept()
-        except OSError as e:
-            err = e.args[0] if e.args else None
-            if err in _EAGAIN:
-                return      # genuinely nothing waiting - the normal case
-            # NOT the normal case: the listening socket itself is broken.
-            # This used to be indistinguishable from "nothing waiting",
-            # which is how a dead listener went unnoticed indefinitely.
-            _rebuild_listener("accept failed: {}".format(e))
-            return
-        _accepted += 1
-        _last_accept_ms = time.ticks_ms()
+        except OSError:
+            return          # nothing else waiting
         try:
             # Shed rather than spiral: serving a full response with almost
             # no contiguous C heap is what turns a slow patch into a
@@ -1516,11 +1384,6 @@ def _status_payload():
         # above; when THIS runs out the network dies while Python keeps going
         "idf_free": state.idf_free,
         "idf_largest": state.idf_largest,
-        # Connections served, and how often the listener had to be rebuilt.
-        # A climbing restart count is the signature of the fault that used
-        # to take the dashboard down silently until a reboot.
-        "conns_accepted": _accepted,
-        "listener_restarts": _listener_restarts,
         # OTA updater status (see updater.py) - drives the dashboard's
         # Firmware Updates card
         "update": {
