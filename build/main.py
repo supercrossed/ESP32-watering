@@ -129,7 +129,8 @@ _idf_free, _idf_largest = idf_heap()
 print("IDF C-heap free before WiFi:", _idf_free, "largest block:", _idf_largest)
 
 _wifi_creds = wifi.load_creds(config)
-if not wifi.connect(_wifi_creds["ssid"], _wifi_creds["password"]):
+if not wifi.connect(_wifi_creds["ssid"], _wifi_creds["password"],
+                    config_module_flag=config):
     # Couldn't join. Fresh kit / wrong password (network visible) -> open
     # the captive setup portal. Router just down (network not visible) ->
     # keep running offline; watering doesn't need WiFi, and the main loop
@@ -169,6 +170,7 @@ if not wifi.connect(_wifi_creds["ssid"], _wifi_creds["password"]):
 import state
 import settings_store
 from ads1x15 import ADS1115
+import moisture
 from moisture import read_all as read_moisture
 from valve import Valve
 import web
@@ -308,6 +310,19 @@ i2c = I2C(
 # own address. A zone's channel is a global index (board 1 = 0-3,
 # board 2 = 4-7, ...) resolved in moisture.read_all().
 ads_boards = [ADS1115(i2c, address=a) for a in hw["ads1115_addresses"]]
+
+# Live ADS1115 addresses. An empty list means "issue no reads" - reading a
+# board that is not on the bus blocks the main loop for ~0.8s per zone and
+# that stall is what takes the dashboard down. See moisture.online_boards.
+ADS_PROBE_SEC = getattr(config, "ADS_PROBE_SEC", 60)
+
+
+def probe_ads_boards(force=False):
+    return moisture.online_boards(
+        i2c,
+        settings_store.get()["hardware"]["ads1115_addresses"],
+        ADS_PROBE_SEC, force, state.log_event)
+
 
 # Optional AHT20+BMP280 environment board: shares the I2C bus at fixed
 # addresses, so it's auto-detected - wire it up and it just appears.
@@ -549,47 +564,16 @@ def check_daily_schedule():
             break  # one schedule at a time; others will be caught next minute
 
 
+# build_zone_list / sample_zone_raw live in moisture.py (a pre-compiled
+# .mpy). They are moisture concerns, and main.py is the one module still
+# compiled ON DEVICE at boot - its code size is what decides whether the
+# WiFi driver can allocate, so code that does not need to be here is not.
+build_zone_list = moisture.build_zone_list
+
+
 def sample_zone_raw(zone_name, seconds=10, wdt_ref=None):
-    """Average the raw ADC for one zone over `seconds`, for calibration.
-
-    A single reading from a capacitive probe wanders by a few percent, so
-    both calibration endpoints are averaged. Also reports the spread, which
-    is how the UI can tell the user their probe hasn't settled yet.
-
-    Returns {"raw", "samples", "min", "max", "spread"} or {"error": ...}.
-    Blocks for `seconds` - the caller runs it from the main loop, not from
-    an HTTP handler, and feeds the watchdog."""
-    hw = settings_store.get()["hardware"]
-    zones = [z for z in build_zone_list(hw) if z["name"] == zone_name]
-    if not zones:
-        return {"error": "unknown zone: " + str(zone_name)}
-    zone = zones[0]
-    ch = zone["channel"]
-    board = ch // 4
-    if board >= len(ads_boards):
-        return {"error": "channel {} has no ADS1115 board".format(ch)}
-
-    readings = []
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        try:
-            readings.append(ads_boards[board].read(ch % 4))
-        except Exception as e:
-            return {"error": "sensor read failed: {}".format(e)}
-        if wdt_ref:
-            wdt_ref.feed()
-        time.sleep(0.25)
-
-    if not readings:
-        return {"error": "no readings captured"}
-    lo, hi = min(readings), max(readings)
-    return {
-        "raw": int(sum(readings) / len(readings)),
-        "samples": len(readings),
-        "min": lo,
-        "max": hi,
-        "spread": hi - lo,
-    }
+    return moisture.sample_zone_raw(
+        ads_boards, settings_store.get()["hardware"], zone_name, seconds, wdt_ref)
 
 
 def reinit_i2c():
@@ -622,6 +606,9 @@ def reinit_i2c():
         found = i2c.scan()
         # rebuild the drivers so they hold the NEW bus object
         ads_boards = [ADS1115(i2c, address=a) for a in hw["ads1115_addresses"]]
+        # hand the fresh scan to the read path so it knows whether it is
+        # worth issuing anything at all
+        moisture.note_scan(hw["ads1115_addresses"], found)
         if aht20 is not None or bmp280 is not None:
             try:
                 import env_sensors
@@ -645,27 +632,6 @@ def reinit_i2c():
         return False
 
 
-def build_zone_list(hw):
-    """Every configured zone as {name, channel, dry_raw, wet_raw,
-    threshold_percent}, ready for moisture.read_all().
-
-    Shared by the moisture loop and the calibration endpoint so both read a
-    zone the same way."""
-    zone_channels = hw.get("zone_channels", {})
-    calib = hw.get("zone_calibration", {})
-    zones = []
-    for name, channel in zone_channels.items():
-        c = calib.get(name) or {}
-        zones.append({
-            "name": name,
-            "channel": channel,
-            "dry_raw": c.get("dry_raw", settings_store.DEFAULT_DRY_RAW),
-            "wet_raw": c.get("wet_raw", settings_store.DEFAULT_WET_RAW),
-            "threshold_percent": 30,
-        })
-    return zones
-
-
 def check_moisture_and_water():
     global _soak_session
     settings = settings_store.get()
@@ -679,7 +645,20 @@ def check_moisture_and_water():
     # calibrated through the dashboard behaves exactly like a config.py one.
     zones = build_zone_list(hw)
 
+    # Nothing on the bus: issue no reads (see moisture.online_boards).
+    if zones and not probe_ads_boards():
+        if state.latest_moisture:
+            state.latest_moisture = []
+        return
+
     readings = read_moisture(ads_boards, zones, settings["zone_thresholds"])
+    if zones and not readings:
+        # EVERY zone failed. read_all() isolates per-zone errors so one bad
+        # probe cannot blind the rest, so a TOTAL failure returns an empty
+        # list rather than raising - and the caller's backoff, which only
+        # watches for an exception, never engaged. Raising here is what
+        # arms the backoff and reinit_i2c().
+        raise OSError("all {} zones failed to read".format(len(zones)))
     state.log_moisture(readings)
 
     if not settings.get("moisture_watering_enabled", True):

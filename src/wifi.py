@@ -47,7 +47,40 @@ def current_ip():
         return "?"
 
 
-def connect(ssid, password, timeout_sec=20):
+def disable_power_save(wlan=None):
+    """Turn off WiFi modem power-save.
+
+    MicroPython defaults the station to PM_PERFORMANCE, which lets the
+    radio sleep between DTIM beacons. The AP then buffers packets until the
+    device wakes, and round-trip latency goes from ~2ms to 100-450ms with
+    no packet loss at all - which is why it never looks like a network
+    fault. Measured on this board: ping averaged 173ms with power save on
+    and 10ms with it off.
+
+    That latency is multiplied by every TCP round trip, so a response
+    needing several of them (the ~6KB GPIO pin map, for instance) takes
+    seconds and can exceed the socket timeout entirely, while small
+    single-segment replies still look fine. That is exactly the "some cards
+    load and others hang" symptom.
+
+    The cost is power: the radio stays awake. For a mains-powered planter
+    that is the right trade. Set WIFI_POWER_SAVE = True in config.py to
+    keep the default behaviour on a battery build."""
+    try:
+        if wlan is None:
+            wlan = network.WLAN(network.STA_IF)
+        wlan.config(pm=network.WLAN.PM_NONE)
+        return True
+    except (AttributeError, OSError, ValueError, TypeError):
+        # Older firmware spells it differently; not fatal either way.
+        try:
+            wlan.config(ps_mode=0)
+            return True
+        except Exception:
+            return False
+
+
+def connect(ssid, password, timeout_sec=20, config_module_flag=None):
     wlan = network.WLAN(network.STA_IF)
     try:
         # mDNS name: reach the dashboard at http://planter.local even if
@@ -69,6 +102,11 @@ def connect(ssid, password, timeout_sec=20):
                 print("WiFi connect timed out")
                 return None
             time.sleep(0.5)
+    # Do this as soon as we are associated: with power save on, every
+    # request pays 100-450ms of extra latency.
+    if not getattr(config_module_flag, "WIFI_POWER_SAVE", False):
+        disable_power_save(wlan)
+
     cfg = wlan.ifconfig()
     # full tuple, not just the IP: if the gateway here differs from the
     # router the PC uses, the ESP32 joined a DIFFERENT access point
@@ -100,13 +138,22 @@ def is_connected():
         return False
 
 
+_ps_applied = False
+
+
 def ensure_connected(ssid, password):
     """Called periodically from the main loop. If the connection dropped
     (router rebooted, signal loss), kick off a reconnect attempt without
     blocking - watering keeps running while WiFi is down."""
+    global _ps_applied
     wlan = network.WLAN(network.STA_IF)
     if wlan.isconnected():
+        # Cheap belt-and-braces: a reconnect that happened without going
+        # through connect()/recycle() would otherwise leave power save on.
+        if not _ps_applied:
+            _ps_applied = disable_power_save(wlan)
         return True
+    _ps_applied = False
     try:
         wlan.active(True)
         wlan.connect(ssid, password)
@@ -226,6 +273,9 @@ def recycle(ssid, password, hard=False):
     # Give it a moment to associate, but stay well short of the watchdog.
     for _ in range(20):          # up to ~10s
         if wlan.isconnected():
+            # Power save comes back on after a reconnect, so re-apply it or
+            # latency quietly creeps back to 170ms.
+            disable_power_save(wlan)
             return True
         time.sleep(0.5)
     return False

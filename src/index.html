@@ -683,7 +683,23 @@ function systemStatus(s, valveEntries) {
   return { state: 'happy', msg: 'All good!', sub: 'Every zone reads above its dry threshold' };
 }
 
+// Overlapping polls were half of a feedback loop that could take the
+// device down: setInterval fires every 5s whether or not the previous
+// request finished, so a slow reply queued another on top of it. If a
+// refresh is still in flight, skip this tick rather than stacking.
+let refreshInFlight = false;
+
 async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    await _refreshInner();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+async function _refreshInner() {
   const res = await fetch('/api/status');
   const s = await res.json();
   const valveEntries = Object.entries(s.valves || {});
@@ -1128,10 +1144,10 @@ let schedules = [];
 let scheduleValveNames = [];
 
 async function loadSchedules() {
-  const [schedRes, valvesRes] = await Promise.all([
-    fetch('/api/schedules'),
-    fetch('/api/valves'),
-  ]);
+  // Sequential, not Promise.all - see initDashboard. Two sockets at once
+  // is two sockets the ESP32's C heap would rather not have open.
+  const schedRes = await fetch('/api/schedules');
+  const valvesRes = await fetch('/api/valves');
   schedules = await schedRes.json();
   const valveList = await valvesRes.json();
   scheduleValveNames = valveList.map(v => v.name);
@@ -1389,10 +1405,9 @@ function channelLabel(ch) {
 }
 
 async function loadPinMap() {
-  const [pinRes, valveRes] = await Promise.all([
-    fetch('/api/pinmap'),
-    fetch('/api/valves'),
-  ]);
+  // Sequential, not Promise.all - see initDashboard.
+  const pinRes = await fetch('/api/pinmap');
+  const valveRes = await fetch('/api/valves');
   pinMapData = await pinRes.json();
   valveConfig = await valveRes.json();
   hwState = pinMapData.hardware;
@@ -2168,14 +2183,25 @@ async function initDashboard() {
   // addresses), which the zones editor and control cards render from.
   // Settings load before the first refresh so the status banner knows
   // whether auto-watering is enabled.
+  // EVERY ONE OF THESE IS AWAITED, deliberately. Firing them together
+  // opened 6+ sockets at once, and that many concurrent connections take
+  // essentially the whole ESP-IDF C heap the WiFi stack allocates from -
+  // measured on the device, it fell from ~31KB to 760 BYTES free for the
+  // duration of the burst, and unrelated requests (a second tab, the 5s
+  // poll) failed until it cleared. Between bursts it recovered to ~30KB,
+  // which is exactly why the fault looked random.
+  //
+  // The same requests issued one at a time are stable indefinitely: 220
+  // requests over 20 page loads with the heap flat. The page is no slower
+  // for it - the constraint is per-connection memory, not round trips.
   await loadPinMap();
   await loadZones();
   await loadWateringSettings();
-  refresh();
-  loadEvents();
-  loadSchedules();
-  loadHistory();
-  loadWifi();
+  await refresh();
+  await loadEvents();
+  await loadSchedules();
+  await loadHistory();
+  await loadWifi();
 }
 let savedTheme = null;
 try { savedTheme = localStorage.getItem('planter-theme'); } catch (e) {}
@@ -2184,9 +2210,13 @@ updateClock();
 setInterval(updateClock, 10000);
 
 initDashboard();
+// Staggered on purpose. 5s, 15s and 60s all divide into each other, so
+// unstaggered these three coincide every minute and fire as one burst -
+// the exact concurrent-connection pattern that starves the C heap. The
+// offsets keep them from ever lining up.
 setInterval(refresh, 5000);
-setInterval(loadEvents, 15000);
-setInterval(loadHistory, 60000);
+setTimeout(() => setInterval(loadEvents, 15000), 2000);
+setTimeout(() => setInterval(loadHistory, 60000), 4000);
 </script>
 </body>
 </html>

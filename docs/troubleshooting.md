@@ -221,6 +221,73 @@ failed sensor, or a sensor browning out. Check wiring and the 3.3V rail.
 
 ---
 
+## The ADS1115 is never found, and the board gets warm
+
+Warm board plus a silent I2C bus is a **power fault**, not a signalling one.
+On a devkit the sensor board is powered from the ESP32's own 3.3V regulator,
+so a module with **VCC and GND reversed** conducts through its substrate
+diodes: it clamps both signal lines low, draws heavy current and heats that
+regulator - the chip you can feel. A diagnosed case showed all of:
+
+- both SCL and SDA low 100% of the time (26,000 samples/second, 8 seconds)
+- the USB serial port dropping out mid-session
+- the ESP32 rebooting on its own
+- the board warm to the touch
+
+**Unplug the module and check VCC -> 3V3 and GND -> GND before SDA/SCL.**
+Reversed power may have damaged the module already, so a second board that
+behaves identically points at the wiring, not two bad chips.
+
+### Telling the failure modes apart from software
+
+You do not need a meter for most of this.
+
+| Symptom | Means |
+|---|---|
+| `[Errno 19] ENODEV` | Bus is healthy, nobody answered at that address |
+| `[Errno 116] ETIMEDOUT` | Something is **holding the bus** |
+| Soft-I2C scan "finds" ~112 addresses | Not 112 devices - SDA is stuck low and reads as an ACK at every address |
+| Hardware scan finds nothing, soft scan finds everything | Same thing: stuck SDA |
+
+**The pull-up test** separates "dead module" from "not powered", because an
+ADS1115 breakout ties its pull-ups to its *own* VDD:
+
+```python
+from machine import Pin
+p = Pin(8, Pin.OUT); p.value(0)      # pull the line low
+p = Pin(8, Pin.IN)                    # release it
+print([p.value() for _ in range(20)]) # does it spring back?
+```
+
+- Springs straight back to 1 -> an external pull-up is present, so the
+  module has power. A silent bus then means the chip is dead or miswired.
+- Stays 0 -> nothing is pulling it up: no VDD, no GND, or a short to ground.
+
+Do the same on a pin with nothing attached as a control - a floating ESP32
+input can read high from leakage alone, and without the control the test
+proves nothing.
+
+Note that swapping SDA and SCL **in software** is exactly equivalent to
+swapping the two wires, so you can rule that out without touching the
+hardware.
+
+### The firmware copes with an absent board
+
+Since 2026-09-06 a missing ADS1115 no longer degrades the controller.
+Reading a board that is not there blocks the main loop ~0.8s **per zone**
+(the I2C timeout is not honoured by this port), and three dead zones
+stretched the loop from 15s to 45s - which timed out every dashboard
+request and looked like a network fault. The firmware now probes the bus
+instead (a scan costs ~30ms), issues no reads when nothing answers, logs:
+
+```
+sensors  no ADS1115 answering on the I2C bus - moisture reads paused
+         (check the module's VCC, GND, SDA and SCL); re-checking every 60s
+```
+
+and picks the board up by itself once the wiring is fixed. Watering by
+schedule continues normally throughout.
+
 ## Dashboard unreachable but the device says WiFi is connected
 
 This is a **zombie connection**: the radio is associated with the access

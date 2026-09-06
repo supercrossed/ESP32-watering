@@ -5,6 +5,177 @@
 Notable changes, newest first. Add an entry for anything user-visible - see
 [CONTRIBUTING.md](CONTRIBUTING.md#the-checklist).
 
+## 2026-09-06
+
+A long debugging session against real hardware. The headline is that
+"WiFi breaks when the sensor is plugged in" was never one bug - it was
+five, each individually capable of taking the dashboard down, plus a
+faulty ADS1115 module. Every claim below was measured on the device;
+where a plausible theory turned out to be wrong, that is recorded too,
+because the wrong turns cost hours and should not be repeated.
+
+### Fixed: large JSON responses killed the network, not just the request
+`/api/pinmap` builds ~6KB of JSON. `json.dumps()` produced a 6KB string and
+`.encode()` a second copy, and allocations that size make MicroPython grow
+its GC heap **out of the ESP-IDF C heap**, which it never gives back.
+Measured mid-request: the C heap fell to **824 bytes free with a 304-byte
+largest block** while `gc.mem_free()` still reported 54KB and everything
+looked healthy.
+
+lwIP takes its TCP buffers from that same C heap. With 304 bytes available
+it could not allocate a segment, so `socket.send()` blocked forever - not on
+the 6KB body but on the **92-byte header**, which is why the symptom was so
+confusing. Small endpoints stayed under the threshold and worked, so the
+dashboard half-loaded and the GPIO card was the one that hung.
+
+Every response that grows with the user's configuration is now streamed
+fragment by fragment (`_send_json` / `_json_fragments`): `/api/status`,
+`/api/settings`, `/api/schedules`, `/api/valves`, `/api/zones`,
+`/api/hardware`, `/api/events`, `/api/pinmap`, `/api/calibrate` and the
+config export. Peak single allocation went from **5159 bytes to 145**,
+verified against a fully populated kit config (4 ADS boards, 8 zones,
+8 valves, 20 schedules).
+
+Content-Length is measured in BYTES, not characters - `json.dumps()` emits
+non-ASCII raw, so a zone named "Jardin" with an accent would otherwise
+under-report and truncate the body, which the browser waits on forever.
+
+### Fixed: a 1024-byte socket write stalls this hardware
+An endpoint sweep was unambiguous: every response up to **947 bytes**
+returned in under 0.7s, and every response from **1025 bytes** up failed.
+Not memory - the C heap had 32560 free with a 29696-byte largest block at
+the moment it stalled. The failing write was always the first 1024-byte
+flush. All socket writes are now bounded to 512 bytes
+(`_SEND_CHUNK`, `_JSON_FLUSH_BYTES`, `_SEND_FILE_CHUNK`). Throughput is
+unaffected: the 6.2KB pin map serves in 0.30s either way.
+
+### Fixed: `send()` ignores `settimeout()`, so one dead client froze everything
+A single send blocked for **30 seconds** on a socket with a 3-second
+timeout. The web server is single-threaded and polled from the main loop,
+so that one stuck client froze the dashboard for everyone - and the valve
+safety cutoff runs in that same loop. Sends are now non-blocking with an
+explicit 4-second deadline and a spin cap, so an abandoned connection costs
+a bounded amount of loop time instead of unbounded.
+
+### Fixed: main.py sits on a compile cliff that breaks WiFi
+`main.py` is the only module still compiled **on the device** at every boot,
+and its code size decides how much C heap is left afterwards:
+
+| main.py | C heap before WiFi | result |
+|---|---|---|
+| 805 statements | 79400 free / 53248 largest | boots, WiFi connects |
+| 816 statements | 26148 free / 14336 largest | `OSError: WiFi Out of Memory` |
+
+Eleven statements was the difference between a working device and one that
+could not bring up its radio. Comments are free - a 3KB comment-only pad
+changed the number not at all - so only executable code counts.
+`build_zone_list` and `sample_zone_raw` moved into `moisture.py` (which
+ships pre-compiled), taking main.py to 786 statements and giving it real
+headroom for the first time. **Before adding code to main.py, check this.**
+
+### Fixed: an absent sensor stalled the main loop every cycle
+Reading an ADS1115 that is not on the bus is neither free nor fast: the I2C
+timeout passed to `I2C()` is not honoured by this port, so each doomed read
+blocked for **~0.8 seconds**. Three unreadable zones stretched the main loop
+from a 15s cycle to **45s**, which timed out every dashboard request and
+looked exactly like a network fault.
+
+Worse, the existing backoff never engaged. `moisture.read_all()` isolates
+per-zone errors so one bad probe cannot blind the rest - which means a
+*total* failure returns an empty list rather than raising, and the caller's
+recovery logic only watched for an exception. The device retried doomed
+reads every 15 seconds forever.
+
+Now `moisture.online_boards()` probes the bus (a scan costs ~30ms whether
+anything answers or not) and no reads are issued when no board replies. It
+logs why, re-checks every `ADS_PROBE_SEC` (60s), and picks the board up by
+itself once the wiring is fixed. A total read failure now also raises, so
+the backoff and `reinit_i2c()` actually run.
+
+### Fixed: the dashboard was attacking the device
+`initDashboard()` awaited its first three calls and then fired five more
+without awaiting - and two of those used `Promise.all` internally - so
+opening the page burst **6-7 simultaneous connections**. Measured, that
+drops the C heap from ~31KB to **760 bytes** for the duration, and anything
+arriving in that window fails: a second tab, a refresh, a background poll.
+Between bursts it recovered to ~30KB, which is exactly why the fault looked
+random and intermittent.
+
+The same requests issued one at a time are stable indefinitely - 220
+requests across 20 page loads with the heap flat. Every startup fetch is now
+awaited, both `Promise.all` pairs are sequential, and the 5s/15s/60s timers
+are staggered (they all divide into 60, so unstaggered they fired as one
+burst every minute). The page is no slower: the constraint is
+per-connection memory, not round trips.
+
+### Fixed: WiFi modem power-save added 100-450ms to every request
+MicroPython defaults the station to `PM_PERFORMANCE`, so the radio sleeps
+between DTIM beacons and the AP buffers packets until it wakes. Ping to the
+device averaged **173ms (30-441ms) with 0% packet loss** - which is why it
+never looked like a fault. `PM_NONE` took it to **10ms**, and `/api/status`
+from 2586ms to 128ms. Set `WIFI_POWER_SAVE = True` only on a battery build.
+
+### Added: the dashboard is served gzip-compressed
+`index.html` is ~101KB and is now pre-compressed at build time to ~29KB
+(`build/index.html.gz`), served with `Content-Encoding: gzip` when the
+client accepts it and falling back to the plain file otherwise.
+
+### Added: load shedding when the C heap is genuinely exhausted
+Below 2048 bytes of contiguous C heap the server answers a tiny
+`503 Retry-After` instead of attempting a real response. An honest "busy"
+beats a device that needs the reset button.
+
+**The threshold matters.** It was first set to 8192, which turned out to sit
+exactly at this hardware's degraded steady state (~7936), so it refused
+nearly every request and showed "busy" instead of the dashboard - the guard
+did more damage than the condition it guarded. Genuine collapse is at
+200-800 bytes.
+
+### Things that were measured and found NOT to be the cause
+Recorded so nobody spends hours on them again:
+
+- **I2C timeouts do not leak C heap.** 100 failing reads (200 timed-out
+  transactions) moved `idf_free` from 89756 to 90180 - *up*.
+- **The WS2812 status LED does not leak.** 300 writes plus 200 raw
+  `machine.bitstream` calls: zero change, despite an `rmt: no mem for
+  group` line in the log that looked incriminating.
+- **The GC heap does not grow into the C heap under load.** When degraded,
+  GC total was 143168 vs 143744 fresh - 576 bytes *smaller* - while the C
+  heap had lost 23300. The missing memory is inside the WiFi/lwIP driver.
+- **Recycling the listening socket recovers nothing.** It fires, main.py
+  rebuilds the listener, and the C heap sits at exactly 9668 before and
+  after. Removed; do not re-add without new evidence.
+
+### Known: the main loop can still hang on a blocking socket call
+Under sustained concurrent load the loop can block long enough for the
+watchdog to reboot the board (`Reset cause: WATCHDOG - the main loop hung`).
+This is **not** a memory problem: it reproduced once on an ESP32-S3 with
+**8MB of C heap free**. The remaining suspect is a socket call that does not
+honour its timeout - `close()` on a socket with unsent data is the leading
+candidate, since `send()` is already known to ignore `settimeout()`.
+
+The watchdog handles it safely - valves close on boot and the device
+recovers unattended in about two minutes - but the dashboard is unavailable
+meanwhile. The proper fix is HTTP keep-alive, which would cut a page load
+from 11 connections to 1.
+
+### Hardware note: a faulty ADS1115 can take the whole board down
+A module in this state was diagnosed live. Both I2C lines pinned low 100%
+of the time, the USB serial port browning out mid-test, the ESP32 rebooting,
+and the board warm to the touch. On a devkit the module is powered from the
+ESP32's own 3.3V regulator, so a reversed VCC/GND conducts through the
+chip's substrate diodes - clamping both signal lines and heating that
+regulator. Check VCC and GND before SDA and SCL.
+
+Useful discriminators, all available in software:
+- `ENODEV` means the bus is healthy and nobody answered; `ETIMEDOUT` means
+  something is holding the bus.
+- A soft-I2C scan that "finds" 112 addresses is not 112 devices - it is SDA
+  stuck low, read as an ACK at every address.
+- Release a line and see whether it springs back: an ADS1115 breakout ties
+  its pull-ups to its own VDD, so a line that stays low means no power, no
+  ground, or a short - not a signalling problem.
+
 ## 2026-08-30
 
 ### Fixed: valve pins floated for the whole boot sequence

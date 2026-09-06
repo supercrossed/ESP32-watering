@@ -107,6 +107,12 @@ STATUS_LED_TYPE = "auto"
 # dashboard, these MUST appear; silence means packets never arrive.
 # Turn off once stable (it spams the serial console every 5s poll).
 WEB_DEBUG = True
+# Log every socket send() and its return value. Off by default - it is
+# very noisy - but this is what caught the C-heap exhaustion: the trace
+# showed send() blocking forever on a 92-byte HEADER, which pointed at
+# lwIP being unable to allocate a segment rather than at anything in the
+# payload itself.
+WEB_SEND_DEBUG = False
 
 # ---- Startup ----
 # Hold off moisture-triggered watering for this many seconds after boot.
@@ -141,6 +147,15 @@ WIFI_RESCUE_AFTER_SEC = 300
 # and sags the 3.3V rail. Set False to disable entirely.
 I2C_BUS_RECOVERY = True
 
+# Leave WiFi modem power-save OFF (that is what False means here). It
+# keeps the radio awake, which costs a little power but removes 100-450ms
+# of latency from every single request - measured on this board, ping went
+# from 173ms average to 10ms. With it on, a response needing several TCP
+# round trips (the ~6KB GPIO pin map) can take seconds or time out
+# altogether, which looks like "some dashboard cards never load".
+# Only set True on a battery-powered build where the power matters more.
+WIFI_POWER_SAVE = False
+
 # ---- Link health ----
 # isconnected() only means the radio is ASSOCIATED. A router whose DHCP
 # lease expired, whose NAT table was cleared, or a wedged lwIP state on our
@@ -174,6 +189,12 @@ DAILY_REBOOT_HOUR = 0
 
 # ---- Timing ----
 MOISTURE_CHECK_INTERVAL_SEC = 15
+# How often to re-check whether an absent ADS1115 has come back. Reading a
+# board that is not on the bus blocks the main loop for ~0.8s PER ZONE (the
+# I2C timeout above is not honoured by this port), which stalls the web
+# server and the valve cutoff; a bus scan costs ~30ms. So when no board
+# answers, moisture reads stop and this is how often we look again.
+ADS_PROBE_SEC = 60
 TZ_OFFSET_SEC = -5 * 3600  # EST; adjust for your timezone / DST manually
 
 # ---- Flow meter (not installed yet - placeholder for later) ----
