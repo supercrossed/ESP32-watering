@@ -146,18 +146,37 @@ Recorded so nobody spends hours on them again:
   rebuilds the listener, and the C heap sits at exactly 9668 before and
   after. Removed; do not re-add without new evidence.
 
-### Known: the main loop can still hang on a blocking socket call
-Under sustained concurrent load the loop can block long enough for the
-watchdog to reboot the board (`Reset cause: WATCHDOG - the main loop hung`).
-This is **not** a memory problem: it reproduced once on an ESP32-S3 with
-**8MB of C heap free**. The remaining suspect is a socket call that does not
-honour its timeout - `close()` on a socket with unsent data is the leading
-candidate, since `send()` is already known to ignore `settimeout()`.
+### Known: concurrent connections hang the main loop (blocking sockets)
+Under parallel requests the loop blocks long enough for the watchdog to
+reboot (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware
+until it reproduced, and the evidence rules out the firmware's own logic:
 
-The watchdog handles it safely - valves close on boot and the device
-recovers unattended in about two minutes - but the dashboard is unavailable
-meanwhile. The proper fix is HTTP keep-alive, which would cut a page load
-from 11 connections to 1.
+- **Not memory.** Reproduced on an ESP32-S3 with **8MB of C heap free**.
+- **Not one bad call.** Two traced hangs stopped at *different* points:
+  once immediately after `close()` returned, once between two successful
+  sends mid-response.
+- **Not abandoned clients.** Adding a client that hangs up mid-response
+  seemed a likely trigger; removing it changed nothing - still 4 watchdog
+  reboots in 6 minutes with every client reading its full response.
+- **Both CPUs report IDLE** in the watchdog dump, so the MicroPython task
+  is parked in a syscall rather than spinning in Python.
+- **Sequential requests never trigger it** - 220 in a row with a flat heap.
+
+The common factor is blocking sockets plus concurrent connections.
+`settimeout()` is already proven not to bound `send()` on this port
+(measured: a 30-second block on a 3-second timeout), and `_read_headers`
+still depends on it.
+
+Impact is bounded: the watchdog reboots the board, valves close on boot,
+and it recovers unattended in ~2 minutes - but the dashboard is gone
+meanwhile, and a browser opening several connections per page load is
+enough to provoke it.
+
+The fix is to stop using blocking sockets: a fully non-blocking,
+poll-driven server. `asyncio` is available on this firmware
+(`asyncio.start_server` verified present) and the long-standing
+"no asyncio" rule in CLAUDE.md has been superseded for the ESP32-S3 build
+on the strength of this measurement.
 
 ### Hardware note: a faulty ADS1115 can take the whole board down
 A module in this state was diagnosed live. Both I2C lines pinned low 100%

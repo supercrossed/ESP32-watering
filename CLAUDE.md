@@ -35,8 +35,16 @@ available.
 
 - Target runtime is **MicroPython on ESP32**, not desktop Python. Only
   MicroPython-available modules exist: `machine`, `network`, `socket`,
-  `select`, `time`, `ntptime`, `ujson`. There is **no** `asyncio` assumed,
-  no `zipfile`, no `threading`, no `pip` packages.
+  `select`, `time`, `ntptime`, `ujson`. No `zipfile`, no `threading`, no
+  `pip` packages.
+  **`asyncio` IS available** (verified on ESP32-S3 firmware v1.28.0:
+  `asyncio.start_server` and `select.poll` both present). The original
+  "no asyncio" rule was a RAM-era assumption; it is superseded for the
+  ESP32-S3 build, where the blocking-socket web server has a reproducible
+  watchdog hang under concurrent connections (see Reliability). Do not
+  adopt asyncio piecemeal - the win comes from the server being entirely
+  non-blocking, and a single blocking call in a handler would stall every
+  connection plus the valve cutoff.
 - **RAM is tiny** (~100KB usable). Avoid buffering large data, avoid
   building big in-memory structures. History lists are intentionally capped.
 - **There are TWO heaps.** The Python GC heap (what `gc.mem_free()` shows)
@@ -463,14 +471,25 @@ block and checked with `node --check`.
   threshold is deliberately far below normal operation - an earlier value
   of 8192 sat exactly at one board's degraded steady state and refused
   nearly everything, doing more harm than the condition it guarded.
-- **OPEN BUG: the main loop can still hang on a blocking socket call.**
-  Under sustained concurrent load it can block long enough for the watchdog
-  to reboot (`Reset cause: WATCHDOG - the main loop hung`). This is NOT
-  memory: it reproduced on an ESP32-S3 with 8MB of C heap free. Leading
-  suspect is `close()` on a socket with unsent data, since `send()` is
-  already known to ignore `settimeout()`. Safe but disruptive - valves
-  close on boot and it recovers unattended in ~2 minutes. The real fix is
-  HTTP keep-alive (a page load is 11 connections; it should be 1).
+- **OPEN BUG: concurrent connections hang the main loop.** Under parallel
+  requests the loop blocks long enough for the watchdog to reboot
+  (`Reset cause: WATCHDOG - the main loop hung`). Traced on hardware, and
+  the evidence rules out our own logic:
+    * NOT memory - reproduced on an ESP32-S3 with **8MB of C heap free**.
+    * NOT a specific call - two traced hangs stopped at *different* points
+      (once after `close()` returned, once between two successful sends).
+    * NOT abandoned clients - it still reboots 4x in 6 minutes when every
+      client reads its full response.
+    * Both CPUs report IDLE in the watchdog dump, so the MicroPython task
+      is parked in a syscall, not spinning in Python.
+    * Strictly sequential requests never trigger it: 220 in a row, flat.
+  The common factor is **blocking sockets with concurrent connections**.
+  `settimeout()` is already proven not to bound `send()` on this port, and
+  `_read_headers` still relies on it. Safe but disruptive: valves close on
+  boot and it recovers unattended in ~2 minutes.
+  **The fix is to stop using blocking sockets** - a fully non-blocking,
+  poll-driven server. `asyncio` (with `start_server`) is available and is
+  the well-trodden path on this port; see the asyncio note below.
 - **Every length that comes off the network is bounded.** `Content-Length`
   is client-supplied: request bodies cap at `_MAX_BODY_BYTES` (16KB),
   uploads at `_MAX_UPLOAD_BYTES` (512KB) with a `_UPLOAD_DEADLINE_SEC`
