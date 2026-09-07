@@ -9,6 +9,9 @@ hardware, and most of it is counter-intuitive. An implementation that
 ignores that section will appear to work on the bench and fail in the
 field in ways that look like network faults.
 
+For a one-page version of the same thing, see
+[OVERVIEW.md](OVERVIEW.md).
+
 ---
 
 ## 1. What to build
